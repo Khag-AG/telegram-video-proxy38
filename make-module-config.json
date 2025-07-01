@@ -1,0 +1,116 @@
+{
+  "name": "telegram-video-downloader",
+  "label": "Download Telegram Video",
+  "description": "Загружает видео из Telegram канала и возвращает файл",
+  "type": "action",
+  "connection": "optional",
+  "parameters": [
+    {
+      "name": "channelUsername",
+      "type": "text",
+      "label": "Канал Telegram",
+      "help": "Username канала с @ (например: @mychannel)",
+      "required": true
+    },
+    {
+      "name": "fileName",
+      "type": "text",
+      "label": "Имя файла",
+      "help": "Точное имя видеофайла в канале",
+      "required": true
+    },
+    {
+      "name": "fileSize",
+      "type": "number",
+      "label": "Размер файла (опционально)",
+      "help": "Размер файла в байтах для точного поиска",
+      "required": false
+    }
+  ],
+  "communication": [
+    {
+      "url": "https://telegram-video-proxy38-production.up.railway.app/make-download-video",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json"
+      },
+      "body": {
+        "channelUsername": "{{parameters.channelUsername}}",
+        "fileName": "{{parameters.fileName}}",
+        "fileSize": "{{parameters.fileSize}}",
+        "outputFormat": "{{if(temp.fileSize < 95000000, 'data', 'url')}}"
+      },
+      "response": {
+        "temp": {
+          "fileSize": "{{body.fileSize}}"
+        }
+      }
+    },
+    {
+      "condition": "{{temp.fileSize < 95000000}}",
+      "response": {
+        "output": {
+          "data": "{{body}}",
+          "fileName": "{{headers['content-disposition'].match(/filename=\"(.+)\"/)[1]}}",
+          "fileSize": "{{headers['x-file-size']}}",
+          "uploadId": "{{headers['x-upload-id']}}"
+        }
+      }
+    },
+    {
+      "condition": "{{temp.fileSize >= 95000000 && body.requiresChunking}}",
+      "response": {
+        "temp": {
+          "chunks": "{{body.chunks}}",
+          "uploadId": "{{body.uploadId}}"
+        }
+      }
+    },
+    {
+      "condition": "{{temp.chunks}}",
+      "repeat": {
+        "items": "{{temp.chunks.urls}}"
+      },
+      "url": "{{item.url}}",
+      "method": "GET",
+      "response": {
+        "temp": {
+          "chunkData": "{{push(ifempty(temp.chunkData, emptyarray), body)}}"
+        }
+      }
+    },
+    {
+      "condition": "{{temp.chunks && length(temp.chunkData) === temp.chunks.total}}",
+      "response": {
+        "output": {
+          "data": "{{join(temp.chunkData, '')}}",
+          "fileName": "{{body.fileName}}",
+          "fileSize": "{{body.fileSize}}",
+          "uploadId": "{{temp.uploadId}}"
+        }
+      }
+    }
+  ],
+  "interface": [
+    {
+      "name": "data",
+      "type": "buffer",
+      "label": "Видео файл"
+    },
+    {
+      "name": "fileName",
+      "type": "text",
+      "label": "Имя файла"
+    },
+    {
+      "name": "fileSize",
+      "type": "number",
+      "label": "Размер файла"
+    },
+    {
+      "name": "uploadId",
+      "type": "text",
+      "label": "ID загрузки"
+    }
+  ]
+}
