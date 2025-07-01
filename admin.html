@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Video Proxy - Админ панель</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 30px;
+        }
+        
+        .card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #666;
+            font-weight: 500;
+        }
+        
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        
+        button {
+            background: #0088cc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        
+        button:hover {
+            background: #0077bb;
+        }
+        
+        button.danger {
+            background: #dc3545;
+        }
+        
+        button.danger:hover {
+            background: #c82333;
+        }
+        
+        .sessions-list {
+            margin-top: 20px;
+        }
+        
+        .session-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+        
+        .session-info {
+            flex: 1;
+        }
+        
+        .session-name {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .session-details {
+            color: #666;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        
+        .status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            margin-left: 10px;
+        }
+        
+        .status.active {
+            background: #28a745;
+            color: white;
+        }
+        
+        .status.inactive {
+            background: #6c757d;
+            color: white;
+        }
+        
+        .alert {
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        
+        .alert.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .step {
+            margin-top: 20px;
+        }
+        
+        .code-block {
+            background: #f4f4f4;
+            padding: 15px;
+            border-radius: 5px;
+            font-family: monospace;
+            margin-top: 10px;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Telegram Video Proxy - Админ панель</h1>
+        
+        <div id="alerts"></div>
+        
+        <!-- Создание новой сессии -->
+        <div class="card">
+            <h2>Создать новую сессию клиента</h2>
+            <div id="step1">
+                <div class="form-group">
+                    <label>Название клиента/компании:</label>
+                    <input type="text" id="clientName" placeholder="ООО Ромашка">
+                </div>
+                <div class="form-group">
+                    <label>Номер телефона (с кодом страны):</label>
+                    <input type="tel" id="phoneNumber" placeholder="+79991234567">
+                </div>
+                <button onclick="requestCode()">Получить код</button>
+            </div>
+            
+            <div id="step2" class="step hidden">
+                <div class="form-group">
+                    <label>Код из Telegram:</label>
+                    <input type="text" id="code" placeholder="12345">
+                </div>
+                <div class="form-group">
+                    <label>Пароль 2FA (если есть):</label>
+                    <input type="password" id="password" placeholder="Оставьте пустым, если нет 2FA">
+                </div>
+                <button onclick="createSession()">Создать сессию</button>
+            </div>
+            
+            <div id="step3" class="step hidden">
+                <h3>✅ Сессия создана успешно!</h3>
+                <p>Session ID для клиента:</p>
+                <div class="code-block" id="sessionId"></div>
+                <p style="margin-top: 10px; color: #666;">
+                    Сохраните этот ID - он понадобится для настройки Make.com
+                </p>
+                <button onclick="resetForm()" style="margin-top: 10px;">Создать еще одну</button>
+            </div>
+        </div>
+        
+        <!-- Список сессий -->
+        <div class="card">
+            <h2>Активные сессии</h2>
+            <button onclick="loadSessions()">Обновить список</button>
+            <div class="sessions-list" id="sessionsList"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_URL = window.location.origin;
+        let currentPhone = '';
+        let currentClient = '';
+
+        function showAlert(message, type = 'success') {
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert ${type}`;
+            alertDiv.textContent = message;
+            document.getElementById('alerts').appendChild(alertDiv);
+            
+            setTimeout(() => {
+                alertDiv.remove();
+            }, 5000);
+        }
+
+        async function requestCode() {
+            const clientName = document.getElementById('clientName').value;
+            const phoneNumber = document.getElementById('phoneNumber').value;
+            
+            if (!clientName || !phoneNumber) {
+                showAlert('Заполните все поля', 'error');
+                return;
+            }
+            
+            currentPhone = phoneNumber;
+            currentClient = clientName;
+            
+            try {
+                const response = await fetch(`${API_URL}/create-session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ clientName, phoneNumber })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'code_required') {
+                    document.getElementById('step1').classList.add('hidden');
+                    document.getElementById('step2').classList.remove('hidden');
+                    showAlert('Код отправлен в Telegram!');
+                } else {
+                    showAlert(data.error || 'Ошибка', 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка соединения', 'error');
+            }
+        }
+
+        async function createSession() {
+            const code = document.getElementById('code').value;
+            const password = document.getElementById('password').value;
+            
+            if (!code) {
+                showAlert('Введите код', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/create-session`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        clientName: currentClient,
+                        phoneNumber: currentPhone,
+                        code,
+                        password
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (data.status === 'success') {
+                    document.getElementById('step2').classList.add('hidden');
+                    document.getElementById('step3').classList.remove('hidden');
+                    document.getElementById('sessionId').textContent = data.sessionId;
+                    loadSessions();
+                } else {
+                    showAlert(data.error || 'Ошибка', 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка соединения', 'error');
+            }
+        }
+
+        function resetForm() {
+            document.getElementById('step1').classList.remove('hidden');
+            document.getElementById('step2').classList.add('hidden');
+            document.getElementById('step3').classList.add('hidden');
+            document.getElementById('clientName').value = '';
+            document.getElementById('phoneNumber').value = '';
+            document.getElementById('code').value = '';
+            document.getElementById('password').value = '';
+        }
+
+        async function loadSessions() {
+            try {
+                const response = await fetch(`${API_URL}/sessions`);
+                const data = await response.json();
+                
+                const listDiv = document.getElementById('sessionsList');
+                listDiv.innerHTML = '';
+                
+                if (data.sessions.length === 0) {
+                    listDiv.innerHTML = '<p style="color: #666;">Нет активных сессий</p>';
+                    return;
+                }
+                
+                data.sessions.forEach(session => {
+                    const sessionDiv = document.createElement('div');
+                    sessionDiv.className = 'session-item';
+                    sessionDiv.innerHTML = `
+                        <div class="session-info">
+                            <div class="session-name">
+                                ${session.clientName}
+                                <span class="status ${session.active ? 'active' : 'inactive'}">
+                                    ${session.active ? 'Активна' : 'Неактивна'}
+                                </span>
+                            </div>
+                            <div class="session-details">
+                                ID: ${session.id}<br>
+                                Телефон: ${session.phoneNumber}<br>
+                                Создана: ${new Date(session.createdAt).toLocaleString('ru')}
+                            </div>
+                        </div>
+                        <button class="danger" onclick="deleteSession('${session.id}')">
+                            Удалить
+                        </button>
+                    `;
+                    listDiv.appendChild(sessionDiv);
+                });
+            } catch (error) {
+                showAlert('Ошибка загрузки сессий', 'error');
+            }
+        }
+
+        async function deleteSession(sessionId) {
+            if (!confirm('Удалить эту сессию?')) return;
+            
+            try {
+                const response = await fetch(`${API_URL}/sessions/${sessionId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.ok) {
+                    showAlert('Сессия удалена');
+                    loadSessions();
+                } else {
+                    showAlert('Ошибка удаления', 'error');
+                }
+            } catch (error) {
+                showAlert('Ошибка соединения', 'error');
+            }
+        }
+
+        // Загружаем сессии при открытии страницы
+        loadSessions();
+    </script>
+</body>
+</html>
