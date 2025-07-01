@@ -203,12 +203,13 @@ app.post('/make-download-video', async (req, res) => {
     if (stats.size < 95 * 1024 * 1024 && returnBinary) {
       const fileBuffer = await fs.readFile(localPath);
       
-      // Возвращаем бинарные данные напрямую
+      // Кодируем имя файла для безопасной передачи
+      const encodedFileName = encodeURIComponent(fileName).replace(/'/g, "%27");
+
       res.setHeader('Content-Type', 'video/mp4');
-      // Кодируем имя файла для безопасной передачи в заголовках
-const encodedFileName = encodeURIComponent(fileName).replace(/'/g, "%27");
-res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedFileName}`);
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedFileName}`);
       res.setHeader('X-Upload-Id', uniqueId);
+      res.setHeader('X-File-Name', encodedFileName);
       res.setHeader('X-File-Size', stats.size);
       res.send(fileBuffer);
       
