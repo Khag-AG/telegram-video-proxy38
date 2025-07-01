@@ -113,14 +113,18 @@ app.get('/file/:uploadId', async (req, res) => {
     
     const stats = await fs.stat(filePath);
     
-    res.setHeader('Content-Type', 'application/octet-stream');
+    // Важно! Правильные заголовки для видео
+    res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Length', stats.size);
+    res.setHeader('Content-Disposition', `attachment; filename="video_${req.params.uploadId}.mp4"`);
     
     const stream = require('fs').createReadStream(filePath);
     stream.pipe(res);
     
     stream.on('end', () => {
-      fs.unlink(filePath).catch(() => {});
+      setTimeout(() => {
+        fs.unlink(filePath).catch(() => {});
+      }, 5000);
     });
     
   } catch (error) {
