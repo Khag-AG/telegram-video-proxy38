@@ -144,7 +144,7 @@ app.get('/health', (req, res) => {
 // Специальный эндпоинт для Make.com - всё в одном
 app.post('/make-download-video', async (req, res) => {
   try {
-    const { channelUsername, fileName, fileSize, outputFormat = 'url' } = req.body;
+    const { channelUsername, fileName, fileSize, returnBinary = false } = req.body;
     
     if (!telegramClient) {
       telegramClient = await initClient();
@@ -200,12 +200,12 @@ app.post('/make-download-video', async (req, res) => {
     };
     
     // Для файлов меньше 95MB - можем вернуть данные напрямую
-    if (stats.size < 95 * 1024 * 1024 && outputFormat === 'data') {
+    if (stats.size < 95 * 1024 * 1024 && returnBinary) {
       const fileBuffer = await fs.readFile(localPath);
       
       // Возвращаем бинарные данные напрямую
-      res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
       res.setHeader('X-Upload-Id', uniqueId);
       res.setHeader('X-File-Size', stats.size);
       res.send(fileBuffer);
