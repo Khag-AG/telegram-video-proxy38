@@ -205,7 +205,9 @@ app.post('/make-download-video', async (req, res) => {
       
       // Возвращаем бинарные данные напрямую
       res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `inline; filename="${fileName}"`);
+      // Кодируем имя файла для безопасной передачи в заголовках
+const encodedFileName = encodeURIComponent(fileName).replace(/'/g, "%27");
+res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodedFileName}`);
       res.setHeader('X-Upload-Id', uniqueId);
       res.setHeader('X-File-Size', stats.size);
       res.send(fileBuffer);
