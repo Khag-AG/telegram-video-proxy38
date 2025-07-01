@@ -136,6 +136,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Поддерживаем активность для Railway
+setInterval(() => {
+  console.log('Keep alive:', new Date().toISOString());
+}, 30000); // каждые 30 секунд
+
 // Запуск
 app.listen(PORT, async () => {
   console.log(`Сервер запущен на порту ${PORT}`);
