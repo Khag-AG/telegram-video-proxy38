@@ -113,10 +113,11 @@ app.get('/file/:uploadId', async (req, res) => {
     
     const stats = await fs.stat(filePath);
     
-    // Важно! Правильные заголовки для видео
+    // Отправляем правильные заголовки для YouTube
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Length', stats.size);
-    res.setHeader('Content-Disposition', `attachment; filename="video_${req.params.uploadId}.mp4"`);
+    res.setHeader('Content-Disposition', 'inline; filename="video.mp4"');
+    res.setHeader('Accept-Ranges', 'bytes');
     
     const stream = require('fs').createReadStream(filePath);
     stream.pipe(res);
@@ -124,7 +125,7 @@ app.get('/file/:uploadId', async (req, res) => {
     stream.on('end', () => {
       setTimeout(() => {
         fs.unlink(filePath).catch(() => {});
-      }, 5000);
+      }, 10000); // Увеличили время до 10 секунд
     });
     
   } catch (error) {
