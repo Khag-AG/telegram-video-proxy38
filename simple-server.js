@@ -290,7 +290,7 @@ app.post('/make-integration', async (req, res) => {
     
     // Ищем видео - сначала получаем последние сообщения без поиска
     const messages = await telegramClient.getMessages(channel, { 
-    limit: 100  // Увеличиваем лимит для поиска
+      limit: 100  // Увеличиваем лимит для поиска
     });
 
     console.log(`[Make Integration] Проверяем ${messages.length} сообщений`);
@@ -299,12 +299,32 @@ app.post('/make-integration', async (req, res) => {
     for (const message of messages) {
       if (message.media && message.media.document) {
         const attrs = message.media.document.attributes || [];
-        const hasFileName = attrs.some(a => a.fileName === fileName);
-        const sizeMatch = !fileSize || Math.abs(message.media.document.size - fileSize) < 1000;
         
-        if (hasFileName || sizeMatch) {
-          targetMessage = message;
-          break;
+        // Проверяем каждый атрибут
+        for (const attr of attrs) {
+          if (attr.fileName) {
+            console.log(`[Make Integration] Найден файл: ${attr.fileName}`);
+            
+            // Сравниваем имена файлов
+            if (attr.fileName === fileName || 
+                attr.fileName.toLowerCase() === fileName.toLowerCase()) {
+              targetMessage = message;
+              break;
+            }
+          }
+        }
+        
+        // Если нашли по имени - выходим
+        if (targetMessage) break;
+        
+        // Если не нашли по имени, но есть размер - проверяем по размеру
+        if (!targetMessage && fileSize && message.media.document.size) {
+          const sizeDiff = Math.abs(message.media.document.size - fileSize);
+          if (sizeDiff < 1000) { // Разница меньше 1KB
+            console.log(`[Make Integration] Найден файл по размеру: ${message.media.document.size} байт`);
+            targetMessage = message;
+            break;
+          }
         }
       }
     }
@@ -347,6 +367,46 @@ app.post('/make-integration', async (req, res) => {
     // Возвращаем информацию о файле
     const baseUrl = `https://${req.get('host')}`;
     
+    // НОВОЕ: Читаем файл и конвертируем в base64 для ВСЕХ размеров
+    let binaryData = null;
+    let isChunked = false;
+    let chunks = [];
+    
+    try {
+      const fileBuffer = await fs.readFile(localPath);
+      
+      // Если файл меньше 95MB - возвращаем как есть
+      if (stats.size < 95 * 1024 * 1024) {
+        binaryData = fileBuffer.toString('base64');
+        console.log(`[Make Integration] Добавлены бинарные данные (base64): ${Math.round(binaryData.length / 1024)}KB`);
+      } else {
+        // Для больших файлов - разбиваем на чанки по 50MB
+        isChunked = true;
+        const chunkSize = 50 * 1024 * 1024; // 50MB чанки
+        const totalChunks = Math.ceil(fileBuffer.length / chunkSize);
+        
+        console.log(`[Make Integration] Файл большой (${Math.round(stats.size / 1024 / 1024)}MB), разбиваем на ${totalChunks} чанков`);
+        
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * chunkSize;
+          const end = Math.min(start + chunkSize, fileBuffer.length);
+          const chunk = fileBuffer.slice(start, end);
+          const chunkBase64 = chunk.toString('base64');
+          
+          chunks.push({
+            index: i,
+            data: chunkBase64,
+            size: chunk.length,
+            sizeBase64: chunkBase64.length
+          });
+          
+          console.log(`[Make Integration] Чанк ${i + 1}/${totalChunks}: ${Math.round(chunk.length / 1024 / 1024)}MB`);
+        }
+      }
+    } catch (error) {
+      console.error(`[Make Integration] Ошибка чтения файла для base64:`, error);
+    }
+    
     res.json({
       success: true,
       uploadId: uploadId,
@@ -363,6 +423,15 @@ app.post('/make-integration', async (req, res) => {
       // Специальные URL для интеграций
       directUrl: `${baseUrl}/direct/${uploadId}/${safeFileName}`,
       publicUrl: `${baseUrl}/public/${uploadId}.mp4`,
+      
+      // НОВОЕ: Бинарные данные
+      data: binaryData, // base64 для файлов < 95MB
+      hasData: !!binaryData,
+      
+      // НОВОЕ: Для больших файлов - чанки
+      isChunked: isChunked,
+      chunks: chunks, // Массив с base64 чанками для больших файлов
+      totalChunks: chunks.length,
       
       // Информация о времени жизни
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
