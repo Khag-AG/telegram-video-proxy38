@@ -288,11 +288,12 @@ app.post('/make-integration', async (req, res) => {
     // Получаем канал
     const channel = await telegramClient.getEntity(channelUsername);
     
-    // Ищем видео
+    // Ищем видео - сначала получаем последние сообщения без поиска
     const messages = await telegramClient.getMessages(channel, { 
-      limit: 50,
-      search: fileName 
+    limit: 100  // Увеличиваем лимит для поиска
     });
+
+    console.log(`[Make Integration] Проверяем ${messages.length} сообщений`);
     
     let targetMessage = null;
     for (const message of messages) {
