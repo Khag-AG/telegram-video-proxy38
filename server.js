@@ -67,6 +67,8 @@ async function getTelegramClient(sessionId, sessionString) {
 
 // API для создания новой сессии (для первичной настройки клиента)
 app.post('/create-session', async (req, res) => {
+  let client = null;
+  
   try {
     const { phoneNumber, password, code, clientName } = req.body;
     
@@ -78,69 +80,130 @@ app.post('/create-session', async (req, res) => {
 
     const apiId = parseInt(process.env.TELEGRAM_API_ID);
     const apiHash = process.env.TELEGRAM_API_HASH;
-    const stringSession = new StringSession('');
+    
+    console.log(`[Create Session] Начинаем для ${clientName} (${phoneNumber})`);
+    
+    // Создаем сессию для каждой попытки
+    const sessionStorage = code ? 
+      new StringSession(req.body.tempSession || '') : 
+      new StringSession('');
 
-    const client = new TelegramClient(stringSession, apiId, apiHash, {
+    client = new TelegramClient(sessionStorage, apiId, apiHash, {
       connectionRetries: 5,
+      useWSS: false
     });
 
-    // Если это первый запрос - начинаем авторизацию
+    await client.connect();
+
+    // Если это первый запрос - отправляем код
     if (!code) {
-      await client.connect();
-      await client.sendCode(
-        {
-          apiId: apiId,
-          apiHash: apiHash,
-        },
-        phoneNumber
-      );
+      console.log('[Create Session] Отправляем код...');
+      
+      const result = await client.sendCode({
+        apiId: apiId,
+        apiHash: apiHash,
+      }, phoneNumber);
+      
+      // Сохраняем временную сессию
+      const tempSession = client.session.save();
+      
+      console.log('[Create Session] Код отправлен, phoneCodeHash:', result.phoneCodeHash);
       
       return res.json({
         status: 'code_required',
-        message: 'Код отправлен в Telegram'
+        message: 'Код отправлен в Telegram',
+        tempSession: tempSession,
+        phoneCodeHash: result.phoneCodeHash
       });
     }
 
-    // Если есть код - завершаем авторизацию
-    await client.start({
-      phoneNumber: () => phoneNumber,
-      password: () => password || '',
-      phoneCode: () => code,
-      onError: (err) => {
-        throw err;
-      },
-    });
+    // Если есть код - авторизуемся
+    console.log('[Create Session] Попытка входа с кодом...');
+    
+    try {
+      await client.start({
+        phoneNumber: () => phoneNumber,
+        phoneCode: () => code,
+        password: () => password || '',
+        onError: (err) => {
+          console.error('[Create Session] Ошибка start:', err);
+          throw err;
+        },
+      });
 
-    const sessionString = client.session.save();
-    const sessionId = uuidv4();
-    
-    // Сохраняем сессию
-    const sessionData = {
-      id: sessionId,
-      clientName: clientName,
-      phoneNumber: phoneNumber,
-      session: sessionString,
-      createdAt: new Date().toISOString()
-    };
-    
-    const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
-    await fs.writeFile(sessionPath, JSON.stringify(sessionData, null, 2));
-    
-    // Отключаем клиент
-    await client.disconnect();
+      // Если успешно - сохраняем сессию
+      const sessionString = client.session.save();
+      const sessionId = uuidv4();
+      
+      console.log('[Create Session] Успешная авторизация!');
+      
+      // Проверяем, что мы действительно авторизованы
+      const me = await client.getMe();
+      console.log('[Create Session] Авторизован как:', me.phone, me.firstName);
+      
+      // Сохраняем сессию
+      const sessionData = {
+        id: sessionId,
+        clientName: clientName,
+        phoneNumber: phoneNumber,
+        session: sessionString,
+        createdAt: new Date().toISOString()
+      };
+      
+      const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
+      await fs.writeFile(sessionPath, JSON.stringify(sessionData, null, 2));
+      
+      res.json({
+        status: 'success',
+        sessionId: sessionId,
+        message: 'Сессия создана успешно'
+      });
 
-    res.json({
-      status: 'success',
-      sessionId: sessionId,
-      message: 'Сессия создана успешно'
-    });
+    } catch (authError) {
+      console.error('[Create Session] Ошибка авторизации:', authError.message);
+      
+      if (authError.message.includes('PHONE_CODE_INVALID')) {
+        return res.status(400).json({ 
+          error: 'Неверный код. Проверьте и попробуйте снова.',
+          tempSession: req.body.tempSession
+        });
+      } else if (authError.message.includes('PHONE_CODE_EXPIRED')) {
+        return res.status(400).json({ 
+          error: 'Код истёк. Запросите новый код.',
+          needNewCode: true
+        });
+      } else if (authError.message.includes('SESSION_PASSWORD_NEEDED')) {
+        return res.status(400).json({ 
+          error: 'Требуется пароль двухфакторной аутентификации',
+          need2FA: true,
+          tempSession: client.session.save()
+        });
+      } else if (authError.message.includes('PASSWORD_HASH_INVALID')) {
+        return res.status(400).json({ 
+          error: 'Неверный пароль 2FA',
+          tempSession: req.body.tempSession
+        });
+      }
+      
+      throw authError;
+    }
 
   } catch (error) {
-    console.error('Ошибка создания сессии:', error);
+    console.error('[Create Session] Общая ошибка:', error);
     res.status(500).json({ 
       error: 'Ошибка создания сессии',
       details: error.message 
     });
+  } finally {
+    // Всегда отключаем клиент
+    if (client) {
+      try {
+        await client.disconnect();
+        console.log('[Create Session] Клиент отключен');
+      } catch (e) {
+        console.error('[Create Session] Ошибка отключения:', e);
+      }
+    }
   }
 });
 
