@@ -375,6 +375,172 @@ setInterval(async () => {
   }
 }, 60 * 60 * 1000); // Каждый час
 
+// Специальный эндпоинт для Make.com с поддержкой сессий
+app.post('/make-download', async (req, res) => {
+  try {
+    const { 
+      sessionId, 
+      channelUsername, 
+      fileName, 
+      fileSize,
+      outputFormat = 'url' // 'url' или 'data'
+    } = req.body;
+    
+    if (!sessionId) {
+      return res.status(400).json({ 
+        error: 'sessionId обязателен' 
+      });
+    }
+
+    // Загружаем данные сессии
+    const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
+    let sessionData;
+    
+    try {
+      const data = await fs.readFile(sessionPath, 'utf8');
+      sessionData = JSON.parse(data);
+    } catch (error) {
+      return res.status(404).json({ 
+        error: 'Сессия не найдена' 
+      });
+    }
+
+    // Получаем клиент
+    const client = await getTelegramClient(sessionId, sessionData.session);
+    
+    console.log(`[Make.com] ${sessionData.clientName} загружает ${fileName}`);
+    
+    // Получаем канал
+    const channel = await client.getEntity(channelUsername);
+    
+    // Ищем видео
+    const messages = await client.getMessages(channel, { 
+      limit: 100,
+      reverse: true 
+    });
+    
+    let targetMessage = null;
+    
+    for (const message of messages) {
+      if (message.media && message.media.document) {
+        const attributes = message.media.document.attributes || [];
+        const hasFileName = attributes.some(attr => 
+          attr.fileName === fileName
+        );
+        
+        if (hasFileName || 
+            (fileSize && Math.abs(message.media.document.size - fileSize) < 1000)) {
+          targetMessage = message;
+          break;
+        }
+      }
+    }
+
+    if (!targetMessage) {
+      return res.status(404).json({ 
+        error: 'Видео не найдено в канале' 
+      });
+    }
+
+    // Генерируем уникальное имя
+    const uniqueId = uuidv4();
+    const extension = path.extname(fileName || 'video.mp4');
+    const localFileName = `${uniqueId}${extension}`;
+    const localFilePath = path.join(uploadDir, localFileName);
+
+    console.log(`[Make.com] Начинаем загрузку...`);
+
+    // Загружаем файл
+    await client.downloadMedia(targetMessage, {
+      outputFile: localFilePath,
+      progressCallback: (received, total) => {
+        const percent = Math.round((received / total) * 100);
+        if (percent % 20 === 0) {
+          console.log(`[Make.com] ${sessionData.clientName}: ${percent}%`);
+        }
+      }
+    });
+
+    const stats = await fs.stat(localFilePath);
+    console.log(`[Make.com] Загружено: ${Math.round(stats.size / 1024 / 1024)}MB`);
+
+    // Для файлов меньше 95MB можем вернуть данные напрямую
+    if (stats.size < 95 * 1024 * 1024 && outputFormat === 'data') {
+      const fileBuffer = await fs.readFile(localFilePath);
+      
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.setHeader('X-Upload-Id', uniqueId);
+      res.setHeader('X-File-Name', fileName);
+      res.setHeader('X-File-Size', stats.size);
+      res.send(fileBuffer);
+      
+      // Удаляем файл через 10 секунд
+      setTimeout(() => {
+        fs.unlink(localFilePath).catch(() => {});
+      }, 10000);
+      
+    } else {
+      // Для больших файлов возвращаем информацию для скачивания
+      const baseUrl = `https://${req.get('host')}`;
+      
+      res.json({
+        success: true,
+        uploadId: uniqueId,
+        fileName: fileName,
+        fileSize: stats.size,
+        fileSizeMB: Math.round(stats.size / 1024 / 1024),
+        downloadUrl: `${baseUrl}/file/${uniqueId}`,
+        directUrl: `${baseUrl}/direct/${uniqueId}/${encodeURIComponent(fileName)}`,
+        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+        clientName: sessionData.clientName
+      });
+      
+      // Удаляем файл через 30 минут
+      setTimeout(() => {
+        fs.unlink(localFilePath).catch(() => {});
+      }, 30 * 60 * 1000);
+    }
+    
+  } catch (error) {
+    console.error('[Make.com] Ошибка:', error);
+    res.status(500).json({ 
+      error: 'Ошибка загрузки видео',
+      details: error.message 
+    });
+  }
+});
+
+// Эндпоинт для прямой загрузки с именем файла
+app.get('/direct/:uploadId/:filename', async (req, res) => {
+  try {
+    const { uploadId } = req.params;
+    const files = await fs.readdir(uploadDir);
+    
+    const file = files.find(f => f.startsWith(uploadId));
+    
+    if (!file) {
+      return res.status(404).json({ error: 'Файл не найден' });
+    }
+
+    const filePath = path.join(uploadDir, file);
+    const stats = await fs.stat(filePath);
+    
+    // Отправляем файл с правильными заголовками
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Content-Disposition', `inline; filename="${req.params.filename}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    
+    const readStream = require('fs').createReadStream(filePath);
+    readStream.pipe(res);
+    
+  } catch (error) {
+    console.error('Ошибка:', error);
+    res.status(500).json({ error: 'Ошибка получения файла' });
+  }
+});
+
 // Запуск сервера
 app.listen(PORT, () => {
   console.log(`\nМультитенантный сервер запущен на порту ${PORT}`);
