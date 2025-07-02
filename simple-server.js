@@ -253,6 +253,198 @@ app.post('/make-download-video', async (req, res) => {
   }
 });
 
+// Специальный эндпоинт для Make.com с поддержкой больших файлов
+app.post('/make-integration', async (req, res) => {
+  try {
+    const { channelUsername, fileName, fileSize, action = 'download' } = req.body;
+    
+    if (!telegramClient) {
+      telegramClient = await initClient();
+      if (!telegramClient) {
+        return res.status(500).json({ error: 'Не удалось подключиться к Telegram' });
+      }
+    }
+    
+    // Если запрос на проверку статуса файла
+    if (action === 'check') {
+      const { uploadId } = req.body;
+      const filePath = path.join(uploadDir, `${uploadId}.mp4`);
+      
+      try {
+        const stats = await fs.stat(filePath);
+        return res.json({
+          status: 'ready',
+          uploadId: uploadId,
+          fileSize: stats.size,
+          expiresIn: '15 minutes'
+        });
+      } catch (err) {
+        return res.json({ status: 'not_found' });
+      }
+    }
+    
+    console.log(`[Make Integration] Загружаем ${fileName} из ${channelUsername}`);
+    
+    // Получаем канал
+    const channel = await telegramClient.getEntity(channelUsername);
+    
+    // Ищем видео
+    const messages = await telegramClient.getMessages(channel, { 
+      limit: 50,
+      search: fileName 
+    });
+    
+    let targetMessage = null;
+    for (const message of messages) {
+      if (message.media && message.media.document) {
+        const attrs = message.media.document.attributes || [];
+        const hasFileName = attrs.some(a => a.fileName === fileName);
+        const sizeMatch = !fileSize || Math.abs(message.media.document.size - fileSize) < 1000;
+        
+        if (hasFileName || sizeMatch) {
+          targetMessage = message;
+          break;
+        }
+      }
+    }
+    
+    if (!targetMessage) {
+      return res.status(404).json({ error: 'Видео не найдено в канале' });
+    }
+    
+    // Генерируем уникальный ID
+    const uploadId = uuidv4();
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9.-]/g, '_');
+    const localPath = path.join(uploadDir, `${uploadId}.mp4`);
+    
+    console.log(`[Make Integration] Начинаем загрузку...`);
+    
+    // Загружаем файл
+    await telegramClient.downloadMedia(targetMessage, {
+      outputFile: localPath,
+      progressCallback: (received, total) => {
+        const percent = Math.round((received / total) * 100);
+        if (percent % 10 === 0) {
+          console.log(`[Make Integration] Прогресс: ${percent}% (${Math.round(received / 1024 / 1024)}MB / ${Math.round(total / 1024 / 1024)}MB)`);
+        }
+      }
+    });
+    
+    const stats = await fs.stat(localPath);
+    console.log(`[Make Integration] Загружено: ${Math.round(stats.size / 1024 / 1024)}MB`);
+    
+    // Планируем удаление через 15 минут
+    setTimeout(async () => {
+      try {
+        await fs.unlink(localPath);
+        console.log(`[Make Integration] Файл удален: ${uploadId}`);
+      } catch (err) {
+        // Файл уже удален
+      }
+    }, 15 * 60 * 1000); // 15 минут
+    
+    // Возвращаем информацию о файле
+    const baseUrl = `https://${req.get('host')}`;
+    
+    res.json({
+      success: true,
+      uploadId: uploadId,
+      fileName: safeFileName,
+      originalFileName: fileName,
+      fileSize: stats.size,
+      fileSizeMB: Math.round(stats.size / 1024 / 1024),
+      mimeType: 'video/mp4',
+      
+      // Прямые ссылки для скачивания
+      downloadUrl: `${baseUrl}/file/${uploadId}`,
+      streamUrl: `${baseUrl}/stream/${uploadId}`,
+      
+      // Специальные URL для интеграций
+      directUrl: `${baseUrl}/direct/${uploadId}/${safeFileName}`,
+      publicUrl: `${baseUrl}/public/${uploadId}.mp4`,
+      
+      // Информация о времени жизни
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      expiresIn: '15 minutes',
+      
+      // Дополнительная информация
+      channelUsername: channelUsername,
+      downloadedAt: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error('[Make Integration] Ошибка:', error);
+    res.status(500).json({ 
+      error: 'Ошибка обработки запроса',
+      details: error.message 
+    });
+  }
+});
+
+// Прямая ссылка с правильным именем файла
+app.get('/direct/:uploadId/:filename', async (req, res) => {
+  try {
+    const { uploadId, filename } = req.params;
+    const filePath = path.join(uploadDir, `${uploadId}.mp4`);
+    
+    const stats = await fs.stat(filePath);
+    
+    // Отправляем с правильными заголовками для соцсетей
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=900'); // Кэш на 15 минут
+    
+    // Поддержка Range запросов для больших файлов
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, "").split("-");
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+      const chunksize = (end - start) + 1;
+      
+      res.statusCode = 206;
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${stats.size}`);
+      res.setHeader('Content-Length', chunksize);
+      
+      const stream = require('fs').createReadStream(filePath, { start, end });
+      stream.pipe(res);
+    } else {
+      const stream = require('fs').createReadStream(filePath);
+      stream.pipe(res);
+    }
+    
+  } catch (error) {
+    res.status(404).json({ error: 'Файл не найден' });
+  }
+});
+
+// Публичная ссылка для соцсетей
+app.get('/public/:filename', async (req, res) => {
+  try {
+    const uploadId = req.params.filename.replace('.mp4', '');
+    const filePath = path.join(uploadDir, `${uploadId}.mp4`);
+    
+    const stats = await fs.stat(filePath);
+    
+    // Оптимизированные заголовки для соцсетей
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Length', stats.size);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'public, max-age=900');
+    
+    // Open Graph meta теги для предпросмотра
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    
+    const stream = require('fs').createReadStream(filePath);
+    stream.pipe(res);
+    
+  } catch (error) {
+    res.status(404).send('Video not found');
+  }
+});
+
 // Эндпоинт для получения чанков
 app.get('/chunk/:uploadId/:index', async (req, res) => {
   try {
