@@ -367,22 +367,24 @@ app.post('/make-integration', async (req, res) => {
     // Возвращаем информацию о файле
     const baseUrl = `https://${req.get('host')}`;
     
-    // НОВОЕ: Читаем файл и конвертируем в base64 для ВСЕХ размеров
+    // ИСПРАВЛЕНО: Читаем файл и конвертируем в hex для Make.com
     let binaryData = null;
+    let hexData = null;
     let isChunked = false;
     let chunks = [];
     
     try {
       const fileBuffer = await fs.readFile(localPath);
       
-      // Если файл меньше 95MB - возвращаем как есть
+      // Если файл меньше 95MB - возвращаем как hex
       if (stats.size < 95 * 1024 * 1024) {
-        binaryData = fileBuffer.toString('base64');
-        console.log(`[Make Integration] Добавлены бинарные данные (base64): ${Math.round(binaryData.length / 1024)}KB`);
+        // Конвертируем в hex формат для Make.com
+        hexData = fileBuffer.toString('hex').match(/.{1,2}/g).join(' ');
+        console.log(`[Make Integration] Добавлены бинарные данные (hex): ${Math.round(hexData.length / 1024)}KB`);
       } else {
-        // Для больших файлов - разбиваем на чанки по 50MB
+        // Для больших файлов - разбиваем на чанки по 30MB
         isChunked = true;
-        const chunkSize = 50 * 1024 * 1024; // 50MB чанки
+        const chunkSize = 30 * 1024 * 1024; // 30MB чанки
         const totalChunks = Math.ceil(fileBuffer.length / chunkSize);
         
         console.log(`[Make Integration] Файл большой (${Math.round(stats.size / 1024 / 1024)}MB), разбиваем на ${totalChunks} чанков`);
@@ -391,20 +393,20 @@ app.post('/make-integration', async (req, res) => {
           const start = i * chunkSize;
           const end = Math.min(start + chunkSize, fileBuffer.length);
           const chunk = fileBuffer.slice(start, end);
-          const chunkBase64 = chunk.toString('base64');
+          const chunkHex = chunk.toString('hex').match(/.{1,2}/g).join(' ');
           
           chunks.push({
             index: i,
-            data: chunkBase64,
+            data: chunkHex,
             size: chunk.length,
-            sizeBase64: chunkBase64.length
+            sizeHex: chunkHex.length
           });
           
           console.log(`[Make Integration] Чанк ${i + 1}/${totalChunks}: ${Math.round(chunk.length / 1024 / 1024)}MB`);
         }
       }
     } catch (error) {
-      console.error(`[Make Integration] Ошибка чтения файла для base64:`, error);
+      console.error(`[Make Integration] Ошибка чтения файла для hex:`, error);
     }
     
     res.json({
@@ -424,13 +426,14 @@ app.post('/make-integration', async (req, res) => {
       directUrl: `${baseUrl}/direct/${uploadId}/${safeFileName}`,
       publicUrl: `${baseUrl}/public/${uploadId}.mp4`,
       
-      // НОВОЕ: Бинарные данные
-      data: binaryData, // base64 для файлов < 95MB
-      hasData: !!binaryData,
+      // ИСПРАВЛЕНО: Бинарные данные в hex формате для Make.com
+      data: hexData, // hex для файлов < 95MB
+      dataFormat: 'hex', // указываем формат данных
+      hasData: !!hexData,
       
-      // НОВОЕ: Для больших файлов - чанки
+      // ИСПРАВЛЕНО: Для больших файлов - чанки
       isChunked: isChunked,
-      chunks: chunks, // Массив с base64 чанками для больших файлов
+      chunks: chunks, // Массив с hex чанками для больших файлов
       totalChunks: chunks.length,
       
       // Информация о времени жизни
@@ -448,6 +451,68 @@ app.post('/make-integration', async (req, res) => {
       error: 'Ошибка обработки запроса',
       details: error.message 
     });
+  }
+});
+
+// НОВЫЙ эндпоинт для Make.com - возвращает бинарные данные напрямую
+app.post('/make-binary', async (req, res) => {
+  try {
+    const { channelUsername, fileName, fileSize } = req.body;
+    
+    if (!telegramClient) {
+      telegramClient = await initClient();
+      if (!telegramClient) {
+        return res.status(500).json({ error: 'Не удалось подключиться к Telegram' });
+      }
+    }
+    
+    console.log(`[Make Binary] Загружаем ${fileName} из ${channelUsername}`);
+    
+    // Получаем канал
+    const channel = await telegramClient.getEntity(channelUsername);
+    
+    // Ищем видео
+    const messages = await telegramClient.getMessages(channel, { limit: 100 });
+    
+    let targetMessage = null;
+    for (const message of messages) {
+      if (message.media && message.media.document) {
+        const attrs = message.media.document.attributes || [];
+        for (const attr of attrs) {
+          if (attr.fileName && attr.fileName === fileName) {
+            targetMessage = message;
+            break;
+          }
+        }
+        if (targetMessage) break;
+      }
+    }
+    
+    if (!targetMessage) {
+      return res.status(404).json({ error: 'Видео не найдено' });
+    }
+    
+    // Загружаем в буфер напрямую (без сохранения на диск)
+    console.log(`[Make Binary] Загружаем в память...`);
+    
+    const buffer = await telegramClient.downloadMedia(targetMessage, {
+      progressCallback: (r, t) => {
+        const percent = Math.round((r / t) * 100);
+        if (percent % 20 === 0) console.log(`[Make Binary] Прогресс: ${percent}%`);
+      }
+    });
+    
+    console.log(`[Make Binary] Загружено ${buffer.length} байт`);
+    
+    // Отправляем как бинарные данные
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', buffer.length);
+    res.send(buffer);
+    
+  } catch (error) {
+    console.error('[Make Binary] Ошибка:', error);
+    res.status(500).json({ error: error.message });
   }
 });
 
