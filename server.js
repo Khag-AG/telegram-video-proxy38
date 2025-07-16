@@ -1,5 +1,5 @@
 const express = require('express');
-const { TelegramClient } = require('telegram');
+const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const cors = require('cors');
 const fs = require('fs').promises;
@@ -10,9 +10,10 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Настройка CORS
+// Настройка CORS и JSON
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // Создаем директории
 const uploadDir = path.join(__dirname, 'uploads');
@@ -20,291 +21,171 @@ const sessionsDir = path.join(__dirname, 'sessions');
 fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
 fs.mkdir(sessionsDir, { recursive: true }).catch(console.error);
 
-// Хранилище активных клиентов
+// Хранилище клиентов Telegram
 const telegramClients = new Map();
 
-// Функция создания клиента для конкретной сессии
-async function getTelegramClient(sessionId, sessionString) {
+// Функция получения клиента для бота
+async function getBotClient(botSessionString) {
   try {
+    // Используем хеш сессии как ключ
+    const sessionKey = require('crypto').createHash('md5').update(botSessionString).digest('hex');
+    
     // Проверяем, есть ли уже активный клиент
-    if (telegramClients.has(sessionId)) {
-      const client = telegramClients.get(sessionId);
+    if (telegramClients.has(sessionKey)) {
+      const client = telegramClients.get(sessionKey);
       if (client.connected) {
+        console.log('Используем существующий клиент');
         return client;
       }
     }
 
-    // Создаем новый клиент
+    console.log('Создаем новый клиент...');
     const apiId = parseInt(process.env.TELEGRAM_API_ID);
     const apiHash = process.env.TELEGRAM_API_HASH;
-    const stringSession = new StringSession(sessionString);
+    const stringSession = new StringSession(botSessionString);
 
     const client = new TelegramClient(stringSession, apiId, apiHash, {
-      connectionRetries: 5,
-      useWSS: true
-    });
-
-    await client.connect();
-    
-    // Сохраняем клиент
-    telegramClients.set(sessionId, client);
-    
-    // Автоматически отключаем неактивные клиенты через 30 минут
-    setTimeout(() => {
-      if (telegramClients.has(sessionId)) {
-        client.disconnect();
-        telegramClients.delete(sessionId);
-        console.log(`Клиент ${sessionId} отключен по таймауту`);
-      }
-    }, 30 * 60 * 1000);
-
-    return client;
-  } catch (error) {
-    console.error(`Ошибка создания клиента для ${sessionId}:`, error);
-    throw error;
-  }
-}
-
-// API для создания новой сессии (для первичной настройки клиента)
-app.post('/create-session', async (req, res) => {
-  let client = null;
-  
-  try {
-    const { phoneNumber, password, code, clientName } = req.body;
-    
-    if (!phoneNumber || !clientName) {
-      return res.status(400).json({ 
-        error: 'phoneNumber и clientName обязательны' 
-      });
-    }
-
-    const apiId = parseInt(process.env.TELEGRAM_API_ID);
-    const apiHash = process.env.TELEGRAM_API_HASH;
-    
-    console.log(`[Create Session] Начинаем для ${clientName} (${phoneNumber})`);
-    
-    // Создаем сессию для каждой попытки
-    const sessionStorage = code ? 
-      new StringSession(req.body.tempSession || '') : 
-      new StringSession('');
-
-    client = new TelegramClient(sessionStorage, apiId, apiHash, {
       connectionRetries: 5,
       useWSS: false
     });
 
     await client.connect();
-
-    // Если это первый запрос - отправляем код
-    if (!code) {
-      console.log('[Create Session] Отправляем код...');
-      
-      const result = await client.sendCode({
-        apiId: apiId,
-        apiHash: apiHash,
-      }, phoneNumber);
-      
-      // Сохраняем временную сессию
-      const tempSession = client.session.save();
-      
-      console.log('[Create Session] Код отправлен, phoneCodeHash:', result.phoneCodeHash);
-      
-      return res.json({
-        status: 'code_required',
-        message: 'Код отправлен в Telegram',
-        tempSession: tempSession,
-        phoneCodeHash: result.phoneCodeHash
-      });
-    }
-
-    // Если есть код - авторизуемся
-    console.log('[Create Session] Попытка входа с кодом...');
+    console.log('Клиент подключен успешно');
     
-    try {
-      await client.start({
-        phoneNumber: () => phoneNumber,
-        phoneCode: () => code,
-        password: () => password || '',
-        onError: (err) => {
-          console.error('[Create Session] Ошибка start:', err);
-          throw err;
-        },
-      });
-
-      // Если успешно - сохраняем сессию
-      const sessionString = client.session.save();
-      const sessionId = uuidv4();
-      
-      console.log('[Create Session] Успешная авторизация!');
-      
-      // Проверяем, что мы действительно авторизованы
-      const me = await client.getMe();
-      console.log('[Create Session] Авторизован как:', me.phone, me.firstName);
-      
-      // Сохраняем сессию
-      const sessionData = {
-        id: sessionId,
-        clientName: clientName,
-        phoneNumber: phoneNumber,
-        session: sessionString,
-        createdAt: new Date().toISOString()
-      };
-      
-      const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
-      await fs.writeFile(sessionPath, JSON.stringify(sessionData, null, 2));
-      
-      res.json({
-        status: 'success',
-        sessionId: sessionId,
-        message: 'Сессия создана успешно'
-      });
-
-    } catch (authError) {
-      console.error('[Create Session] Ошибка авторизации:', authError.message);
-      
-      if (authError.message.includes('PHONE_CODE_INVALID')) {
-        return res.status(400).json({ 
-          error: 'Неверный код. Проверьте и попробуйте снова.',
-          tempSession: req.body.tempSession
-        });
-      } else if (authError.message.includes('PHONE_CODE_EXPIRED')) {
-        return res.status(400).json({ 
-          error: 'Код истёк. Запросите новый код.',
-          needNewCode: true
-        });
-      } else if (authError.message.includes('SESSION_PASSWORD_NEEDED')) {
-        return res.status(400).json({ 
-          error: 'Требуется пароль двухфакторной аутентификации',
-          need2FA: true,
-          tempSession: client.session.save()
-        });
-      } else if (authError.message.includes('PASSWORD_HASH_INVALID')) {
-        return res.status(400).json({ 
-          error: 'Неверный пароль 2FA',
-          tempSession: req.body.tempSession
-        });
-      }
-      
-      throw authError;
-    }
-
+    // Сохраняем клиент
+    telegramClients.set(sessionKey, client);
+    
+    return client;
   } catch (error) {
-    console.error('[Create Session] Общая ошибка:', error);
-    res.status(500).json({ 
-      error: 'Ошибка создания сессии',
-      details: error.message 
-    });
-  } finally {
-    // Всегда отключаем клиент
-    if (client) {
-      try {
-        await client.disconnect();
-        console.log('[Create Session] Клиент отключен');
-      } catch (e) {
-        console.error('[Create Session] Ошибка отключения:', e);
-      }
-    }
+    console.error('Ошибка создания клиента:', error);
+    throw error;
   }
-});
+}
 
-// API для загрузки видео
-app.post('/download-video', async (req, res) => {
+// Основной эндпоинт для Make.com
+app.post('/make-download', async (req, res) => {
   try {
     const { 
-      sessionId, 
+      botSession,
       channelUsername, 
       fileName, 
-      messageId,
       fileSize 
     } = req.body;
     
-    if (!sessionId) {
+    if (!botSession || !channelUsername || !fileName) {
       return res.status(400).json({ 
-        error: 'sessionId обязателен' 
+        error: 'Обязательные параметры: botSession, channelUsername, fileName' 
       });
     }
 
-    // Загружаем данные сессии
-    const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
-    let sessionData;
+    console.log(`\n[Make.com] Запрос на загрузку: ${fileName} из ${channelUsername}`);
     
-    try {
-      const data = await fs.readFile(sessionPath, 'utf8');
-      sessionData = JSON.parse(data);
-    } catch (error) {
-      return res.status(404).json({ 
-        error: 'Сессия не найдена' 
-      });
-    }
-
     // Получаем клиент
-    const client = await getTelegramClient(sessionId, sessionData.session);
+    const client = await getBotClient(botSession);
     
     // Получаем канал
-    const channel = await client.getEntity(channelUsername);
+    let channel;
+    try {
+      // Убираем @ если есть
+      const cleanUsername = channelUsername.replace('@', '');
+      channel = await client.getEntity(cleanUsername);
+      console.log(`Канал найден: ${channel.title}`);
+    } catch (error) {
+      console.error('Ошибка получения канала:', error);
+      return res.status(404).json({ 
+        error: 'Канал не найден',
+        details: error.message 
+      });
+    }
     
-    // Ищем сообщение
+    // Ищем сообщение с видео
+    console.log('Поиск видео в канале...');
     const messages = await client.getMessages(channel, { 
-      limit: 50,
-      reverse: true 
+      limit: 100,
+      reverse: false // Сначала новые
     });
     
     let targetMessage = null;
     
     for (const message of messages) {
       if (message.media && message.media.document) {
-        const attributes = message.media.document.attributes || [];
-        const hasFileName = attributes.some(attr => 
-          attr.fileName === fileName
-        );
+        const doc = message.media.document;
+        const attributes = doc.attributes || [];
         
-        // Проверяем по имени файла или размеру
-        if (hasFileName || 
-            (fileSize && Math.abs(message.media.document.size - fileSize) < 1000)) {
+        // Ищем по имени файла
+        const fileAttr = attributes.find(attr => attr.fileName);
+        if (fileAttr && fileAttr.fileName === fileName) {
           targetMessage = message;
+          console.log(`Найдено видео: ${fileName}`);
           break;
+        }
+        
+        // Если не нашли по имени, проверяем по размеру
+        if (!targetMessage && fileSize && doc.size) {
+          const sizeDiff = Math.abs(doc.size - fileSize);
+          if (sizeDiff < 1000) { // Разница меньше 1KB
+            targetMessage = message;
+            console.log(`Найдено видео по размеру: ${doc.size} байт`);
+            break;
+          }
         }
       }
     }
 
     if (!targetMessage) {
       return res.status(404).json({ 
-        error: 'Видео не найдено в канале' 
+        error: 'Видео не найдено в канале',
+        searched: fileName
       });
     }
 
-    // Генерируем уникальное имя
-    const uniqueId = uuidv4();
-    const extension = path.extname(fileName || 'video.mp4');
-    const localFileName = `${uniqueId}${extension}`;
+    // Генерируем уникальное имя файла
+    const uploadId = uuidv4();
+    const extension = path.extname(fileName) || '.mp4';
+    const localFileName = `${uploadId}${extension}`;
     const localFilePath = path.join(uploadDir, localFileName);
 
-    console.log(`[${sessionData.clientName}] Загружаем: ${fileName}`);
-
+    console.log(`Начинаем загрузку файла...`);
+    
     // Загружаем файл
     await client.downloadMedia(targetMessage, {
       outputFile: localFilePath,
       progressCallback: (received, total) => {
         const percent = Math.round((received / total) * 100);
-        if (percent % 20 === 0) {
-          console.log(`[${sessionData.clientName}] Прогресс: ${percent}%`);
+        if (percent % 10 === 0) {
+          console.log(`Прогресс: ${percent}% (${Math.round(received / 1024 / 1024)}MB / ${Math.round(total / 1024 / 1024)}MB)`);
         }
       }
     });
 
     const stats = await fs.stat(localFilePath);
+    const fileSizeMB = Math.round(stats.size / 1024 / 1024);
+    console.log(`Загрузка завершена: ${fileSizeMB}MB`);
+
+    // Читаем файл в буфер для Make.com
+    const fileBuffer = await fs.readFile(localFilePath);
     
-    res.json({
-      success: true,
-      uploadId: uniqueId,
-      fileName: localFileName,
-      size: stats.size,
-      downloadUrl: `${req.protocol}://${req.get('host')}/file/${uniqueId}`,
-      clientName: sessionData.clientName
-    });
+    // Отправляем файл как бинарные данные
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('X-Upload-Id', uploadId);
+    res.setHeader('X-File-Name', fileName);
+    res.setHeader('X-File-Size', stats.size);
+    
+    res.send(fileBuffer);
+    
+    // Удаляем файл через 5 минут
+    setTimeout(async () => {
+      try {
+        await fs.unlink(localFilePath);
+        console.log(`Файл удален: ${localFileName}`);
+      } catch (err) {
+        // Файл уже удален
+      }
+    }, 5 * 60 * 1000);
 
   } catch (error) {
-    console.error('Ошибка загрузки:', error);
+    console.error('Ошибка:', error);
     res.status(500).json({ 
       error: 'Ошибка загрузки видео',
       details: error.message 
@@ -312,8 +193,104 @@ app.post('/download-video', async (req, res) => {
   }
 });
 
-// API для получения бинарных данных
-app.get('/file/:uploadId', async (req, res) => {
+// Эндпоинт для больших файлов (если файл больше 95MB для Make.com)
+app.post('/make-download-url', async (req, res) => {
+  try {
+    const { 
+      botSession,
+      channelUsername, 
+      fileName, 
+      fileSize 
+    } = req.body;
+    
+    if (!botSession || !channelUsername || !fileName) {
+      return res.status(400).json({ 
+        error: 'Обязательные параметры: botSession, channelUsername, fileName' 
+      });
+    }
+
+    console.log(`\n[Make URL] Запрос на загрузку: ${fileName} из ${channelUsername}`);
+    
+    // Получаем клиент
+    const client = await getBotClient(botSession);
+    
+    // Получаем канал
+    const cleanUsername = channelUsername.replace('@', '');
+    const channel = await client.getEntity(cleanUsername);
+    
+    // Ищем видео
+    const messages = await client.getMessages(channel, { limit: 100 });
+    
+    let targetMessage = null;
+    
+    for (const message of messages) {
+      if (message.media && message.media.document) {
+        const doc = message.media.document;
+        const attributes = doc.attributes || [];
+        const fileAttr = attributes.find(attr => attr.fileName);
+        
+        if (fileAttr && fileAttr.fileName === fileName) {
+          targetMessage = message;
+          break;
+        }
+      }
+    }
+
+    if (!targetMessage) {
+      return res.status(404).json({ error: 'Видео не найдено' });
+    }
+
+    // Генерируем файл
+    const uploadId = uuidv4();
+    const extension = path.extname(fileName) || '.mp4';
+    const localFileName = `${uploadId}${extension}`;
+    const localFilePath = path.join(uploadDir, localFileName);
+
+    console.log('Загружаем файл...');
+    
+    await client.downloadMedia(targetMessage, {
+      outputFile: localFilePath,
+      progressCallback: (received, total) => {
+        const percent = Math.round((received / total) * 100);
+        if (percent % 20 === 0) {
+          console.log(`Прогресс: ${percent}%`);
+        }
+      }
+    });
+
+    const stats = await fs.stat(localFilePath);
+    const baseUrl = `https://${req.get('host')}`;
+    
+    // Возвращаем URL для скачивания
+    res.json({
+      success: true,
+      fileName: fileName,
+      filePath: `videos/${localFileName}`,
+      fileUrl: `${baseUrl}/download/${uploadId}`,
+      fileSize: stats.size,
+      fileSizeMB: Math.round(stats.size / 1024 / 1024),
+      expiresIn: '15 minutes'
+    });
+    
+    // Удаляем через 15 минут
+    setTimeout(async () => {
+      try {
+        await fs.unlink(localFilePath);
+        console.log(`Файл удален: ${localFileName}`);
+      } catch (err) {}
+    }, 15 * 60 * 1000);
+
+  } catch (error) {
+    console.error('Ошибка:', error);
+    res.status(500).json({ 
+      error: 'Ошибка обработки',
+      details: error.message 
+    });
+  }
+});
+
+// Эндпоинт для скачивания файла по ID
+app.get('/download/:uploadId', async (req, res) => {
   try {
     const { uploadId } = req.params;
     const files = await fs.readdir(uploadDir);
@@ -328,93 +305,24 @@ app.get('/file/:uploadId', async (req, res) => {
     const stats = await fs.stat(filePath);
     
     // Отправляем файл
-    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Length', stats.size);
-    res.setHeader('Content-Disposition', `attachment; filename="${file}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="video.mp4"`);
     
     const readStream = require('fs').createReadStream(filePath);
     readStream.pipe(res);
     
-    // Планируем удаление
-    readStream.on('end', () => {
-      setTimeout(async () => {
-        try {
-          await fs.unlink(filePath);
-          console.log(`Файл удален: ${file}`);
-        } catch (err) {
-          // Файл уже удален
-        }
-      }, 5000);
-    });
-
   } catch (error) {
-    console.error('Ошибка:', error);
-    res.status(500).json({ 
-      error: 'Ошибка получения файла' 
-    });
+    res.status(500).json({ error: 'Ошибка получения файла' });
   }
 });
 
-// API для управления сессиями
-app.get('/sessions', async (req, res) => {
-  try {
-    const files = await fs.readdir(sessionsDir);
-    const sessions = [];
-    
-    for (const file of files) {
-      if (file.endsWith('.json')) {
-        const data = await fs.readFile(path.join(sessionsDir, file), 'utf8');
-        const session = JSON.parse(data);
-        sessions.push({
-          id: session.id,
-          clientName: session.clientName,
-          phoneNumber: session.phoneNumber.slice(0, -4) + '****',
-          createdAt: session.createdAt,
-          active: telegramClients.has(session.id)
-        });
-      }
-    }
-    
-    res.json({ sessions });
-  } catch (error) {
-    res.status(500).json({ error: 'Ошибка получения сессий' });
-  }
-});
-
-// API для удаления сессии
-app.delete('/sessions/:sessionId', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    
-    // Отключаем клиент если активен
-    if (telegramClients.has(sessionId)) {
-      const client = telegramClients.get(sessionId);
-      await client.disconnect();
-      telegramClients.delete(sessionId);
-    }
-    
-    // Удаляем файл сессии
-    const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
-    await fs.unlink(sessionPath);
-    
-    res.json({ success: true });
-  } catch (error) {
-    res.status(500).json({ error: 'Ошибка удаления сессии' });
-  }
-});
-
-// Проверка здоровья
+// Тестовый эндпоинт
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK',
-    activeSessions: telegramClients.size,
-    uptime: process.uptime()
+    activeSessions: telegramClients.size
   });
-});
-
-// Админ панель
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'admin.html'));
 });
 
 // Очистка старых файлов
@@ -422,7 +330,7 @@ setInterval(async () => {
   try {
     const files = await fs.readdir(uploadDir);
     const now = Date.now();
-    const maxAge = 2 * 60 * 60 * 1000; // 2 часа
+    const maxAge = 60 * 60 * 1000; // 1 час
 
     for (const file of files) {
       const filePath = path.join(uploadDir, file);
@@ -436,182 +344,14 @@ setInterval(async () => {
   } catch (error) {
     console.error('Ошибка очистки:', error);
   }
-}, 60 * 60 * 1000); // Каждый час
-
-// Специальный эндпоинт для Make.com с поддержкой сессий
-app.post('/make-download', async (req, res) => {
-  try {
-    const { 
-      sessionId, 
-      channelUsername, 
-      fileName, 
-      fileSize,
-      outputFormat = 'url' // 'url' или 'data'
-    } = req.body;
-    
-    if (!sessionId) {
-      return res.status(400).json({ 
-        error: 'sessionId обязателен' 
-      });
-    }
-
-    // Загружаем данные сессии
-    const sessionPath = path.join(sessionsDir, `${sessionId}.json`);
-    let sessionData;
-    
-    try {
-      const data = await fs.readFile(sessionPath, 'utf8');
-      sessionData = JSON.parse(data);
-    } catch (error) {
-      return res.status(404).json({ 
-        error: 'Сессия не найдена' 
-      });
-    }
-
-    // Получаем клиент
-    const client = await getTelegramClient(sessionId, sessionData.session);
-    
-    console.log(`[Make.com] ${sessionData.clientName} загружает ${fileName}`);
-    
-    // Получаем канал
-    const channel = await client.getEntity(channelUsername);
-    
-    // Ищем видео
-    const messages = await client.getMessages(channel, { 
-      limit: 100,
-      reverse: true 
-    });
-    
-    let targetMessage = null;
-    
-    for (const message of messages) {
-      if (message.media && message.media.document) {
-        const attributes = message.media.document.attributes || [];
-        const hasFileName = attributes.some(attr => 
-          attr.fileName === fileName
-        );
-        
-        if (hasFileName || 
-            (fileSize && Math.abs(message.media.document.size - fileSize) < 1000)) {
-          targetMessage = message;
-          break;
-        }
-      }
-    }
-
-    if (!targetMessage) {
-      return res.status(404).json({ 
-        error: 'Видео не найдено в канале' 
-      });
-    }
-
-    // Генерируем уникальное имя
-    const uniqueId = uuidv4();
-    const extension = path.extname(fileName || 'video.mp4');
-    const localFileName = `${uniqueId}${extension}`;
-    const localFilePath = path.join(uploadDir, localFileName);
-
-    console.log(`[Make.com] Начинаем загрузку...`);
-
-    // Загружаем файл
-    await client.downloadMedia(targetMessage, {
-      outputFile: localFilePath,
-      progressCallback: (received, total) => {
-        const percent = Math.round((received / total) * 100);
-        if (percent % 20 === 0) {
-          console.log(`[Make.com] ${sessionData.clientName}: ${percent}%`);
-        }
-      }
-    });
-
-    const stats = await fs.stat(localFilePath);
-    console.log(`[Make.com] Загружено: ${Math.round(stats.size / 1024 / 1024)}MB`);
-
-    // Для файлов меньше 95MB можем вернуть данные напрямую
-    if (stats.size < 95 * 1024 * 1024 && outputFormat === 'data') {
-      const fileBuffer = await fs.readFile(localFilePath);
-      
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.setHeader('X-Upload-Id', uniqueId);
-      res.setHeader('X-File-Name', fileName);
-      res.setHeader('X-File-Size', stats.size);
-      res.send(fileBuffer);
-      
-      // Удаляем файл через 10 секунд
-      setTimeout(() => {
-        fs.unlink(localFilePath).catch(() => {});
-      }, 10000);
-      
-    } else {
-      // Для больших файлов возвращаем информацию для скачивания
-      const baseUrl = `https://${req.get('host')}`;
-      
-      res.json({
-        success: true,
-        uploadId: uniqueId,
-        fileName: fileName,
-        fileSize: stats.size,
-        fileSizeMB: Math.round(stats.size / 1024 / 1024),
-        downloadUrl: `${baseUrl}/file/${uniqueId}`,
-        directUrl: `${baseUrl}/direct/${uniqueId}/${encodeURIComponent(fileName)}`,
-        expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-        clientName: sessionData.clientName
-      });
-      
-      // Удаляем файл через 30 минут
-      setTimeout(() => {
-        fs.unlink(localFilePath).catch(() => {});
-      }, 30 * 60 * 1000);
-    }
-    
-  } catch (error) {
-    console.error('[Make.com] Ошибка:', error);
-    res.status(500).json({ 
-      error: 'Ошибка загрузки видео',
-      details: error.message 
-    });
-  }
-});
-
-// Эндпоинт для прямой загрузки с именем файла
-app.get('/direct/:uploadId/:filename', async (req, res) => {
-  try {
-    const { uploadId } = req.params;
-    const files = await fs.readdir(uploadDir);
-    
-    const file = files.find(f => f.startsWith(uploadId));
-    
-    if (!file) {
-      return res.status(404).json({ error: 'Файл не найден' });
-    }
-
-    const filePath = path.join(uploadDir, file);
-    const stats = await fs.stat(filePath);
-    
-    // Отправляем файл с правильными заголовками
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Length', stats.size);
-    res.setHeader('Content-Disposition', `inline; filename="${req.params.filename}"`);
-    res.setHeader('Accept-Ranges', 'bytes');
-    
-    const readStream = require('fs').createReadStream(filePath);
-    readStream.pipe(res);
-    
-  } catch (error) {
-    console.error('Ошибка:', error);
-    res.status(500).json({ error: 'Ошибка получения файла' });
-  }
-});
+}, 30 * 60 * 1000); // Каждые 30 минут
 
 // Запуск сервера
 app.listen(PORT, () => {
-  console.log(`\nМультитенантный сервер запущен на порту ${PORT}`);
-  console.log(`\nAPI endpoints:`);
-  console.log(`  POST   /create-session     - Создание новой сессии`);
-  console.log(`  POST   /download-video     - Загрузка видео`);
-  console.log(`  GET    /file/:uploadId     - Получение файла`);
-  console.log(`  GET    /sessions           - Список сессий`);
-  console.log(`  DELETE /sessions/:id       - Удаление сессии`);
-  console.log(`  GET    /health             - Статус сервера\n`);
+  console.log(`\n✅ Сервер запущен на порту ${PORT}`);
+  console.log(`\nДоступные эндпоинты:`);
+  console.log(`  POST /make-download     - Загрузка видео (до 95MB)`);
+  console.log(`  POST /make-download-url - Загрузка больших видео (возвращает URL)`);
+  console.log(`  GET  /download/:id      - Скачать файл по ID`);
+  console.log(`  GET  /health            - Проверка статуса\n`);
 });

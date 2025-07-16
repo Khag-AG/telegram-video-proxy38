@@ -1,0 +1,83 @@
+{
+  "name": "telegram-video-proxy",
+  "label": "Telegram Video Proxy",
+  "version": 1,
+  "description": "Загрузка видео из Telegram каналов",
+  "base": {
+    "baseUrl": "https://midjourney-api-saas-production.up.railway.app"
+  },
+  "modules": [
+    {
+      "name": "downloadVideo",
+      "label": "Загрузить видео из Telegram",
+      "description": "Загружает видео из указанного канала Telegram",
+      "connection": "telegram-session",
+      "parameters": [
+        {
+          "name": "channelUsername",
+          "type": "text",
+          "label": "Username канала",
+          "help": "Username канала с @ (например: @mychannel)",
+          "required": true
+        },
+        {
+          "name": "fileName",
+          "type": "text",
+          "label": "Имя файла",
+          "help": "Точное имя видеофайла в канале",
+          "required": true
+        },
+        {
+          "name": "fileSize",
+          "type": "number",
+          "label": "Размер файла (байты)",
+          "help": "Опционально: размер файла для точного поиска",
+          "required": false
+        }
+      ],
+      "expect": [
+        {
+          "name": "success",
+          "type": "boolean",
+          "label": "Успешно"
+        },
+        {
+          "name": "uploadId",
+          "type": "text",
+          "label": "ID загрузки"
+        },
+        {
+          "name": "fileName",
+          "type": "text",
+          "label": "Имя файла"
+        },
+        {
+          "name": "fileSize",
+          "type": "number",
+          "label": "Размер файла"
+        },
+        {
+          "name": "downloadUrl",
+          "type": "url",
+          "label": "Ссылка для скачивания"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "name": "telegram-session",
+      "label": "Telegram Session",
+      "type": "basic",
+      "parameters": [
+        {
+          "name": "sessionId",
+          "type": "text",
+          "label": "Session ID",
+          "help": "ID сессии, полученный от администратора",
+          "required": true
+        }
+      ]
+    }
+  ]
+}
