@@ -27,8 +27,19 @@ const telegramClients = new Map();
 // Функция получения клиента для бота
 async function getBotClient(botSessionString) {
   try {
+    console.log('Получена строка сессии:', botSessionString ? 'Да' : 'Нет');
+    console.log('Длина строки:', botSessionString ? botSessionString.length : 0);
+    
+    // Проверяем наличие строки сессии
+    if (!botSessionString || botSessionString.trim() === '') {
+      throw new Error('Строка сессии не предоставлена');
+    }
+    
+    // Убираем лишние пробелы и переносы строк
+    const cleanSession = botSessionString.trim();
+    
     // Используем хеш сессии как ключ
-    const sessionKey = require('crypto').createHash('md5').update(botSessionString).digest('hex');
+    const sessionKey = require('crypto').createHash('md5').update(cleanSession).digest('hex');
     
     // Проверяем, есть ли уже активный клиент
     if (telegramClients.has(sessionKey)) {
@@ -42,7 +53,11 @@ async function getBotClient(botSessionString) {
     console.log('Создаем новый клиент...');
     const apiId = parseInt(process.env.TELEGRAM_API_ID);
     const apiHash = process.env.TELEGRAM_API_HASH;
-    const stringSession = new StringSession(botSessionString);
+    
+    console.log('API ID:', apiId ? 'Установлен' : 'НЕ УСТАНОВЛЕН');
+    console.log('API Hash:', apiHash ? 'Установлен' : 'НЕ УСТАНОВЛЕН');
+    
+    const stringSession = new StringSession(cleanSession);
 
     const client = new TelegramClient(stringSession, apiId, apiHash, {
       connectionRetries: 5,
@@ -57,7 +72,7 @@ async function getBotClient(botSessionString) {
     
     return client;
   } catch (error) {
-    console.error('Ошибка создания клиента:', error);
+    console.error('Ошибка создания клиента:', error.message);
     throw error;
   }
 }
