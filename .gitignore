@@ -29,3 +29,6 @@ uploads/*
 *.key
 config.json
 secrets.json
+
+# Old files
+secure-server.js

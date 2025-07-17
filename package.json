@@ -1,5 +1,5 @@
 "main": "bot-server.js",
-  "scripts": {
-    "start": "node bot-server.js",
-    "dev": "nodemon bot-server.js"
-  },
+"scripts": {
+  "start": "node bot-server.js",
+  "dev": "nodemon bot-server.js"
+}
