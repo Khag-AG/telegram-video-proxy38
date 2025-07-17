@@ -132,50 +132,33 @@ app.post('/download-bot', async (req, res) => {
       const baseUrl = `https://${req.get('host')}`;
       const downloadUrl = `${baseUrl}/file/${downloadToken}`;
       
-      // Для файлов < 95MB возвращаем И ссылку И бинарные данные
-      if (stats.size < 95 * 1024 * 1024) {
-        // Читаем файл для отправки в теле ответа
-        const fileBuffer = await fs.readFile(localPath);
-        
-        // Возвращаем JSON с данными
-        res.json({
-          success: true,
-          fileName: fileName,
-          fileSize: stats.size,
-          fileSizeMB: (stats.size / 1024 / 1024).toFixed(2),
-          downloadUrl: downloadUrl,
-          expiresIn: '30 minutes',
-          fileData: fileBuffer.toString('base64') // Конвертируем в base64 для JSON
-        });
-        
-        // Удаляем через 30 минут (как и для ссылки)
-        setTimeout(async () => {
-          try {
-            await fs.unlink(localPath);
-            console.log(`🗑️ Временный файл удален: ${tempFileName}`);
-          } catch (e) {}
-        }, 30 * 60 * 1000);
-        
-      } else {
-        // Для больших файлов возвращаем только ссылку
-        res.json({
-          success: true,
-          fileName: fileName,
-          fileSize: stats.size,
-          fileSizeMB: (stats.size / 1024 / 1024).toFixed(2),
-          downloadUrl: downloadUrl,
-          expiresIn: '30 minutes',
-          fileData: null // Для больших файлов не отправляем данные
-        });
-        
-        // Удаляем через 30 минут
-        setTimeout(async () => {
-          try {
-            await fs.unlink(localPath);
-            console.log(`🗑️ Временный файл удален: ${tempFileName}`);
-          } catch (e) {}
-        }, 30 * 60 * 1000);
-      }
+      // ВСЕГДА возвращаем и ссылку и данные
+      console.log(`📤 Отправляем файл размером ${(stats.size / 1024 / 1024).toFixed(2)} MB...`);
+      
+      // Читаем файл для отправки
+      const fileBuffer = await fs.readFile(localPath);
+      
+      // Устанавливаем большой лимит для ответа
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      
+      // Возвращаем JSON с данными
+      res.json({
+        success: true,
+        fileName: fileName,
+        fileSize: stats.size,
+        fileSizeMB: (stats.size / 1024 / 1024).toFixed(2),
+        downloadUrl: downloadUrl,
+        expiresIn: '30 minutes',
+        fileData: fileBuffer.toString('base64') // ВСЕГДА отправляем данные
+      });
+      
+      // Удаляем через 30 минут
+      setTimeout(async () => {
+        try {
+          await fs.unlink(localPath);
+          console.log(`🗑️ Временный файл удален: ${tempFileName}`);
+        } catch (e) {}
+      }, 30 * 60 * 1000);
       
     } catch (error) {
       console.error('❌ Ошибка MTProto:', error);
@@ -233,7 +216,7 @@ app.post('/download-bot', async (req, res) => {
           fileSizeMB: (buffer.length / 1024 / 1024).toFixed(2),
           downloadUrl: `${baseUrl}/file/${downloadToken}`,
           expiresIn: '30 minutes',
-          fileData: buffer.toString('base64')
+          fileData: buffer.toString('base64') // ВСЕГДА отправляем данные
         });
         
         // Удаляем через 30 минут
