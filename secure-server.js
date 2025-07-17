@@ -278,6 +278,20 @@ setInterval(async () => {
   } catch (error) {}
 }, 5 * 60 * 1000); // каждые 5 минут
 
+// Health check endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    server: 'Telegram Video Proxy',
+    version: '3.0.0'
+  });
+});
+
+// Health check для Railway
+app.get('/health', (req, res) => {
+  res.json({ status: 'OK' });
+});
+
 app.listen(PORT, () => {
   console.log(`\n🔒 Защищенный сервер запущен на порту ${PORT}`);
   console.log(`\nКлюч шифрования: ${ENCRYPTION_KEY.substring(0, 10)}...`);
