@@ -292,6 +292,110 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK' });
 });
 
+// Прямой эндпоинт для Make.com без токенов
+app.post('/make-direct', async (req, res) => {
+  let client = null;
+  
+  try {
+    const { sessionString, channelUsername, fileName } = req.body;
+    
+    console.log('[Make Direct] Получен запрос');
+    console.log('[Make Direct] Channel:', channelUsername);
+    console.log('[Make Direct] File:', fileName);
+    console.log('[Make Direct] Session length:', sessionString ? sessionString.length : 0);
+    
+    if (!sessionString || sessionString.length < 400) {
+      return res.status(400).json({ 
+        error: 'Неверная строка сессии',
+        length: sessionString ? sessionString.length : 0
+      });
+    }
+    
+    // Создаем клиент
+    const apiId = parseInt(process.env.TELEGRAM_API_ID);
+    const apiHash = process.env.TELEGRAM_API_HASH;
+    
+    client = new TelegramClient(
+      new StringSession(sessionString),
+      apiId,
+      apiHash,
+      { connectionRetries: 3 }
+    );
+    
+    await client.connect();
+    console.log('[Make Direct] Подключено к Telegram');
+    
+    // Получаем канал
+    const cleanUsername = channelUsername.replace('@', '');
+    const channel = await client.getEntity(cleanUsername);
+    console.log('[Make Direct] Канал найден:', channel.title);
+    
+    // Ищем видео
+    const messages = await client.getMessages(channel, { limit: 50 });
+    
+    let targetMessage = null;
+    for (const message of messages) {
+      if (message.media && message.media.document) {
+        const attrs = message.media.document.attributes || [];
+        const fileAttr = attrs.find(attr => attr.fileName === fileName);
+        if (fileAttr) {
+          targetMessage = message;
+          break;
+        }
+      }
+    }
+    
+    if (!targetMessage) {
+      throw new Error('Видео не найдено');
+    }
+    
+    // Для маленьких файлов - скачиваем в буфер
+    const doc = targetMessage.media.document;
+    if (doc.size < 95 * 1024 * 1024) {
+      console.log('[Make Direct] Скачиваем файл в память...');
+      const buffer = await client.downloadMedia(targetMessage);
+      
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      res.send(buffer);
+    } else {
+      // Для больших файлов - скачиваем на диск
+      const uploadId = uuidv4();
+      const localPath = path.join(uploadDir, `${uploadId}.mp4`);
+      
+      console.log('[Make Direct] Скачиваем большой файл...');
+      await client.downloadMedia(targetMessage, {
+        outputFile: localPath
+      });
+      
+      const baseUrl = `https://${req.get('host')}`;
+      res.json({
+        success: true,
+        fileName: fileName,
+        fileSize: doc.size,
+        downloadUrl: `${baseUrl}/download-file/${uploadId}`
+      });
+      
+      // Удаляем через 15 минут
+      setTimeout(() => {
+        fs.unlink(localPath).catch(() => {});
+      }, 15 * 60 * 1000);
+    }
+    
+  } catch (error) {
+    console.error('[Make Direct] Ошибка:', error);
+    res.status(500).json({ 
+      error: error.message 
+    });
+  } finally {
+    if (client) {
+      try {
+        await client.disconnect();
+      } catch (e) {}
+    }
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`\n🔒 Защищенный сервер запущен на порту ${PORT}`);
   console.log(`\nКлюч шифрования: ${ENCRYPTION_KEY.substring(0, 10)}...`);
