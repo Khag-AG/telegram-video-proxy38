@@ -1,5 +1,5 @@
 const express = require('express');
-const { TelegramClient } = require('telegram');
+const { TelegramClient, Api } = require('telegram');
 const { StringSession } = require('telegram/sessions');
 const cors = require('cors');
 const crypto = require('crypto');
@@ -18,385 +18,335 @@ app.use(express.json({ limit: '100mb' }));
 const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
 
-// Временное хранилище клиентов (только в памяти)
-const activeClients = new Map();
+// Глобальный клиент бота
+let botClient = null;
 
-// Шифрование/дешифрование
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex');
-const IV_LENGTH = 16;
-
-function encrypt(text) {
-  const iv = crypto.randomBytes(IV_LENGTH);
-  const cipher = crypto.createCipheriv(
-    'aes-256-cbc', 
-    Buffer.from(ENCRYPTION_KEY.slice(0, 32)), 
-    iv
-  );
-  let encrypted = cipher.update(text);
-  encrypted = Buffer.concat([encrypted, cipher.final()]);
-  return iv.toString('hex') + ':' + encrypted.toString('hex');
-}
-
-function decrypt(text) {
-  const textParts = text.split(':');
-  const iv = Buffer.from(textParts.shift(), 'hex');
-  const encryptedText = Buffer.from(textParts.join(':'), 'hex');
-  const decipher = crypto.createDecipheriv(
-    'aes-256-cbc', 
-    Buffer.from(ENCRYPTION_KEY.slice(0, 32)), 
-    iv
-  );
-  let decrypted = decipher.update(encryptedText);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
-  return decrypted.toString();
-}
-
-// Создание временного токена доступа
-function createAccessToken(sessionString) {
-  const payload = {
-    session: sessionString,
-    exp: Date.now() + (5 * 60 * 1000) // 5 минут
-  };
-  return encrypt(JSON.stringify(payload));
-}
-
-// Проверка и получение сессии из токена
-function getSessionFromToken(token) {
+// Инициализация бота
+async function initializeBot() {
   try {
-    const decrypted = decrypt(token);
-    const payload = JSON.parse(decrypted);
-    
-    if (Date.now() > payload.exp) {
-      throw new Error('Токен истек');
-    }
-    
-    return payload.session;
-  } catch (error) {
-    throw new Error('Неверный токен');
-  }
-}
-
-// Эндпоинт для создания временного токена
-app.post('/create-token', async (req, res) => {
-  try {
-    const { sessionString } = req.body;
-    
-    if (!sessionString || sessionString.length < 400) {
-      return res.status(400).json({ 
-        error: 'Неверная строка сессии' 
-      });
-    }
-    
-    // Создаем временный токен
-    const token = createAccessToken(sessionString);
-    
-    res.json({
-      token: token,
-      expiresIn: '5 minutes'
-    });
-    
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Основной эндпоинт для загрузки
-app.post('/download-secure', async (req, res) => {
-  let client = null;
-  const clientId = uuidv4();
-  
-  try {
-    const { token, channelUsername, fileName, fileSize } = req.body;
-    
-    if (!token) {
-      return res.status(400).json({ 
-        error: 'Токен не предоставлен' 
-      });
-    }
-    
-    // Получаем сессию из токена
-    const sessionString = getSessionFromToken(token);
-    
-    console.log(`[Secure] Загрузка ${fileName} из ${channelUsername}`);
-    
-    // Создаем клиент
     const apiId = parseInt(process.env.TELEGRAM_API_ID);
     const apiHash = process.env.TELEGRAM_API_HASH;
-    
-    client = new TelegramClient(
-      new StringSession(sessionString),
+    const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+    if (!apiId || !apiHash || !botToken) {
+      throw new Error('Отсутствуют необходимые переменные окружения');
+    }
+
+    console.log('🤖 Инициализация Telegram бота...');
+
+    // Создаем клиент для бота
+    botClient = new TelegramClient(
+      new StringSession(''),
       apiId,
       apiHash,
-      { connectionRetries: 3 }
+      {
+        connectionRetries: 5,
+        useWSS: false
+      }
     );
-    
-    activeClients.set(clientId, client);
-    await client.connect();
-    
-    // Получаем канал
-    const cleanUsername = channelUsername.replace('@', '');
-    const channel = await client.getEntity(cleanUsername);
-    
-    // Ищем видео
-    const messages = await client.getMessages(channel, { limit: 50 });
-    
-    let targetMessage = null;
-    for (const message of messages) {
-      if (message.media && message.media.document) {
-        const attrs = message.media.document.attributes || [];
-        const fileAttr = attrs.find(attr => attr.fileName === fileName);
-        if (fileAttr) {
-          targetMessage = message;
-          break;
-        }
-      }
-    }
-    
-    if (!targetMessage) {
-      return res.status(404).json({ error: 'Видео не найдено' });
-    }
-    
-    // Загружаем файл
-    const uploadId = uuidv4();
-    const localPath = path.join(uploadDir, `${uploadId}.mp4`);
-    
-    await client.downloadMedia(targetMessage, {
-      outputFile: localPath,
-      progressCallback: (received, total) => {
-        const percent = Math.round((received / total) * 100);
-        if (percent % 20 === 0) {
-          console.log(`[Secure] Прогресс: ${percent}%`);
-        }
-      }
+
+    // Подключаемся как бот
+    await botClient.start({
+      botAuthToken: botToken,
+      onError: (err) => console.error('Ошибка авторизации:', err),
     });
+
+    console.log('✅ Бот успешно подключен!');
     
-    const stats = await fs.stat(localPath);
+    // Получаем информацию о боте
+    const me = await botClient.getMe();
+    console.log(`🤖 Бот: @${me.username} (ID: ${me.id})`);
+
+  } catch (error) {
+    console.error('❌ Ошибка инициализации бота:', error);
+    process.exit(1);
+  }
+}
+
+// Основной эндпоинт для Make.com
+app.post('/download-bot', async (req, res) => {
+  try {
+    const { channelUsername, fileName } = req.body;
     
-    // Для файлов меньше 95MB - возвращаем напрямую
-    if (stats.size < 95 * 1024 * 1024) {
-      const fileBuffer = await fs.readFile(localPath);
-      
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.send(fileBuffer);
-      
-      // Удаляем файл
-      setTimeout(() => {
-        fs.unlink(localPath).catch(() => {});
-      }, 5000);
-    } else {
-      // Для больших файлов - возвращаем ссылку
-      const downloadToken = encrypt(JSON.stringify({
-        uploadId: uploadId,
-        fileName: fileName,
-        exp: Date.now() + (15 * 60 * 1000) // 15 минут
-      }));
-      
-      res.json({
-        success: true,
-        fileName: fileName,
-        fileSize: stats.size,
-        downloadToken: downloadToken,
-        downloadUrl: `https://${req.get('host')}/download-file/${downloadToken}`
+    console.log(`📥 Запрос на скачивание: ${fileName} из ${channelUsername}`);
+    
+    if (!channelUsername || !fileName) {
+      return res.status(400).json({ 
+        error: 'Необходимо указать channelUsername и fileName' 
       });
+    }
+
+    // Убираем @ если есть
+    const cleanUsername = channelUsername.replace('@', '');
+    
+    try {
+      // Получаем канал/чат
+      let entity;
+      try {
+        // Сначала пробуем как username
+        entity = await botClient.getEntity(cleanUsername);
+      } catch (e) {
+        // Если не удалось, пробуем как ID чата
+        const chatId = parseInt(cleanUsername);
+        if (!isNaN(chatId)) {
+          entity = await botClient.getEntity(chatId);
+        } else {
+          throw e;
+        }
+      }
+      
+      console.log(`📍 Найден канал/чат: ${entity.title || entity.firstName || 'Unknown'}`);
+      
+      // Ищем сообщение с файлом
+      const messages = await botClient.getMessages(entity, { 
+        limit: 100  // Увеличиваем лимит для поиска
+      });
+      
+      console.log(`📨 Найдено сообщений: ${messages.length}`);
+      
+      let targetMessage = null;
+      let fileInfo = null;
+      
+      for (const message of messages) {
+        if (message.media) {
+          let docFileName = null;
+          let document = null;
+          
+          // Проверяем разные типы медиа
+          if (message.media.className === 'MessageMediaDocument' && message.media.document) {
+            document = message.media.document;
+            const attrs = document.attributes || [];
+            const fileAttr = attrs.find(attr => attr.className === 'DocumentAttributeFilename');
+            docFileName = fileAttr ? fileAttr.fileName : null;
+          }
+          
+          // Проверяем совпадение имени файла
+          if (docFileName === fileName) {
+            targetMessage = message;
+            fileInfo = {
+              fileName: docFileName,
+              fileSize: document.size,
+              mimeType: document.mimeType
+            };
+            console.log(`✅ Файл найден: ${docFileName} (${(fileInfo.fileSize / 1024 / 1024).toFixed(2)} MB)`);
+            break;
+          }
+        }
+      }
+      
+      if (!targetMessage) {
+        // Выводим список найденных файлов для отладки
+        console.log('📋 Доступные файлы в канале:');
+        for (const msg of messages) {
+          if (msg.media && msg.media.document) {
+            const attrs = msg.media.document.attributes || [];
+            const fileAttr = attrs.find(attr => attr.className === 'DocumentAttributeFilename');
+            if (fileAttr) {
+              console.log(`  - ${fileAttr.fileName}`);
+            }
+          }
+        }
+        
+        return res.status(404).json({ 
+          error: 'Файл не найден',
+          hint: 'Проверьте правильность имени файла и доступность канала для бота'
+        });
+      }
+      
+      // Генерируем уникальное имя для временного файла
+      const uploadId = uuidv4();
+      const tempFileName = `${uploadId}_${fileName}`;
+      const localPath = path.join(uploadDir, tempFileName);
+      
+      console.log(`⏬ Начинаем загрузку файла...`);
+      
+      // Загружаем файл
+      const buffer = await botClient.downloadMedia(targetMessage.media, {
+        progressCallback: (downloaded, total) => {
+          const percent = Math.round((downloaded / total) * 100);
+          if (percent % 10 === 0) {
+            console.log(`  Прогресс: ${percent}% (${(downloaded / 1024 / 1024).toFixed(2)} / ${(total / 1024 / 1024).toFixed(2)} MB)`);
+          }
+        }
+      });
+      
+      // Сохраняем файл
+      await fs.writeFile(localPath, buffer);
+      console.log(`💾 Файл сохранен: ${localPath}`);
+      
+      const stats = await fs.stat(localPath);
+      
+      // Для файлов меньше 95MB - возвращаем напрямую
+      if (stats.size < 95 * 1024 * 1024) {
+        res.setHeader('Content-Type', fileInfo.mimeType || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        res.setHeader('Content-Length', stats.size);
+        
+        const fileBuffer = await fs.readFile(localPath);
+        res.send(fileBuffer);
+        
+        // Удаляем файл через 5 секунд
+        setTimeout(async () => {
+          try {
+            await fs.unlink(localPath);
+            console.log(`🗑️ Временный файл удален: ${tempFileName}`);
+          } catch (e) {}
+        }, 5000);
+        
+      } else {
+        // Для больших файлов возвращаем ссылку
+        const downloadToken = Buffer.from(JSON.stringify({
+          uploadId: uploadId,
+          fileName: fileName,
+          mimeType: fileInfo.mimeType,
+          exp: Date.now() + (30 * 60 * 1000) // 30 минут
+        })).toString('base64');
+        
+        const baseUrl = `https://${req.get('host')}`;
+        
+        res.json({
+          success: true,
+          fileName: fileName,
+          fileSize: stats.size,
+          fileSizeMB: (stats.size / 1024 / 1024).toFixed(2),
+          mimeType: fileInfo.mimeType,
+          downloadUrl: `${baseUrl}/file/${downloadToken}`,
+          expiresIn: '30 minutes'
+        });
+        
+        // Удаляем через 30 минут
+        setTimeout(async () => {
+          try {
+            await fs.unlink(localPath);
+            console.log(`🗑️ Временный файл удален: ${tempFileName}`);
+          } catch (e) {}
+        }, 30 * 60 * 1000);
+      }
+      
+    } catch (error) {
+      console.error('❌ Ошибка при работе с Telegram:', error);
+      
+      if (error.message.includes('CHANNEL_PRIVATE')) {
+        return res.status(403).json({ 
+          error: 'Канал приватный. Убедитесь, что бот добавлен в канал как администратор' 
+        });
+      }
+      
+      if (error.message.includes('USERNAME_NOT_OCCUPIED')) {
+        return res.status(404).json({ 
+          error: 'Канал не найден. Проверьте правильность username' 
+        });
+      }
+      
+      throw error;
     }
     
   } catch (error) {
-    console.error('[Secure] Ошибка:', error);
+    console.error('❌ Общая ошибка:', error);
     res.status(500).json({ 
-      error: 'Ошибка обработки',
+      error: 'Внутренняя ошибка сервера',
       details: error.message 
     });
-  } finally {
-    // Всегда отключаем клиент
-    if (client) {
-      try {
-        await client.disconnect();
-      } catch (e) {}
-      activeClients.delete(clientId);
-    }
   }
 });
 
-// Эндпоинт для скачивания больших файлов
-app.get('/download-file/:token', async (req, res) => {
+// Эндпоинт для скачивания больших файлов по токену
+app.get('/file/:token', async (req, res) => {
   try {
     const { token } = req.params;
     
-    // Расшифровываем токен
-    const data = JSON.parse(decrypt(token));
+    // Декодируем токен
+    const data = JSON.parse(Buffer.from(token, 'base64').toString());
     
     if (Date.now() > data.exp) {
       return res.status(403).json({ error: 'Ссылка истекла' });
     }
     
-    const filePath = path.join(uploadDir, `${data.uploadId}.mp4`);
-    const stats = await fs.stat(filePath);
+    const tempFileName = `${data.uploadId}_${data.fileName}`;
+    const filePath = path.join(uploadDir, tempFileName);
     
-    res.setHeader('Content-Type', 'video/mp4');
-    res.setHeader('Content-Length', stats.size);
-    res.setHeader('Content-Disposition', `attachment; filename="${data.fileName}"`);
-    
-    const stream = require('fs').createReadStream(filePath);
-    stream.pipe(res);
-    
-    // Удаляем после отправки
-    stream.on('end', () => {
-      setTimeout(() => {
-        fs.unlink(filePath).catch(() => {});
-      }, 5000);
-    });
+    try {
+      const stats = await fs.stat(filePath);
+      
+      res.setHeader('Content-Type', data.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Length', stats.size);
+      res.setHeader('Content-Disposition', `attachment; filename="${data.fileName}"`);
+      
+      const stream = require('fs').createReadStream(filePath);
+      stream.pipe(res);
+      
+    } catch (error) {
+      res.status(404).json({ error: 'Файл не найден' });
+    }
     
   } catch (error) {
-    res.status(404).json({ error: 'Файл не найден' });
+    res.status(400).json({ error: 'Неверный токен' });
   }
 });
 
-// Очистка
+// Health check endpoints
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    server: 'Telegram Bot Video Proxy',
+    version: '4.0.0',
+    bot: botClient ? 'Connected' : 'Not connected'
+  });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    uptime: process.uptime()
+  });
+});
+
+// Очистка старых файлов
 setInterval(async () => {
-  // Отключаем неактивные клиенты
-  for (const [id, client] of activeClients) {
-    if (!client.connected) {
-      activeClients.delete(id);
-    }
-  }
-  
-  // Удаляем старые файлы
   try {
     const files = await fs.readdir(uploadDir);
     const now = Date.now();
     
     for (const file of files) {
+      if (file === '.gitkeep') continue;
+      
       const filePath = path.join(uploadDir, file);
       const stats = await fs.stat(filePath);
       
-      if (now - stats.mtimeMs > 30 * 60 * 1000) { // 30 минут
+      // Удаляем файлы старше 1 часа
+      if (now - stats.mtimeMs > 60 * 60 * 1000) {
         await fs.unlink(filePath);
-        console.log(`Удален старый файл: ${file}`);
+        console.log(`🗑️ Удален старый файл: ${file}`);
       }
     }
-  } catch (error) {}
-}, 5 * 60 * 1000); // каждые 5 минут
-
-// Health check endpoint
-app.get('/', (req, res) => {
-  res.json({ 
-    status: 'OK',
-    server: 'Telegram Video Proxy',
-    version: '3.0.0'
-  });
-});
-
-// Health check для Railway
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK' });
-});
-
-// Прямой эндпоинт для Make.com без токенов
-app.post('/make-direct', async (req, res) => {
-  let client = null;
-  
-  try {
-    const { sessionString, channelUsername, fileName } = req.body;
-    
-    console.log('[Make Direct] Получен запрос');
-    console.log('[Make Direct] Channel:', channelUsername);
-    console.log('[Make Direct] File:', fileName);
-    console.log('[Make Direct] Session length:', sessionString ? sessionString.length : 0);
-    
-    if (!sessionString || sessionString.length < 400) {
-      return res.status(400).json({ 
-        error: 'Неверная строка сессии',
-        length: sessionString ? sessionString.length : 0
-      });
-    }
-    
-    // Создаем клиент
-    const apiId = parseInt(process.env.TELEGRAM_API_ID);
-    const apiHash = process.env.TELEGRAM_API_HASH;
-    
-    client = new TelegramClient(
-      new StringSession(sessionString),
-      apiId,
-      apiHash,
-      { connectionRetries: 3 }
-    );
-    
-    await client.connect();
-    console.log('[Make Direct] Подключено к Telegram');
-    
-    // Получаем канал
-    const cleanUsername = channelUsername.replace('@', '');
-    const channel = await client.getEntity(cleanUsername);
-    console.log('[Make Direct] Канал найден:', channel.title);
-    
-    // Ищем видео
-    const messages = await client.getMessages(channel, { limit: 50 });
-    
-    let targetMessage = null;
-    for (const message of messages) {
-      if (message.media && message.media.document) {
-        const attrs = message.media.document.attributes || [];
-        const fileAttr = attrs.find(attr => attr.fileName === fileName);
-        if (fileAttr) {
-          targetMessage = message;
-          break;
-        }
-      }
-    }
-    
-    if (!targetMessage) {
-      throw new Error('Видео не найдено');
-    }
-    
-    // Для маленьких файлов - скачиваем в буфер
-    const doc = targetMessage.media.document;
-    if (doc.size < 95 * 1024 * 1024) {
-      console.log('[Make Direct] Скачиваем файл в память...');
-      const buffer = await client.downloadMedia(targetMessage);
-      
-      res.setHeader('Content-Type', 'video/mp4');
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
-      res.send(buffer);
-    } else {
-      // Для больших файлов - скачиваем на диск
-      const uploadId = uuidv4();
-      const localPath = path.join(uploadDir, `${uploadId}.mp4`);
-      
-      console.log('[Make Direct] Скачиваем большой файл...');
-      await client.downloadMedia(targetMessage, {
-        outputFile: localPath
-      });
-      
-      const baseUrl = `https://${req.get('host')}`;
-      res.json({
-        success: true,
-        fileName: fileName,
-        fileSize: doc.size,
-        downloadUrl: `${baseUrl}/download-file/${uploadId}`
-      });
-      
-      // Удаляем через 15 минут
-      setTimeout(() => {
-        fs.unlink(localPath).catch(() => {});
-      }, 15 * 60 * 1000);
-    }
-    
   } catch (error) {
-    console.error('[Make Direct] Ошибка:', error);
-    res.status(500).json({ 
-      error: error.message 
-    });
-  } finally {
-    if (client) {
-      try {
-        await client.disconnect();
-      } catch (e) {}
-    }
+    console.error('Ошибка при очистке:', error);
   }
+}, 10 * 60 * 1000); // каждые 10 минут
+
+// Запуск сервера
+async function startServer() {
+  await initializeBot();
+  
+  app.listen(PORT, () => {
+    console.log(`\n🚀 Сервер запущен на порту ${PORT}`);
+    console.log(`📡 Эндпоинты:`);
+    console.log(`   POST /download-bot - Скачивание файлов через бота`);
+    console.log(`   GET  /file/:token  - Получение больших файлов`);
+    console.log(`   GET  /health       - Проверка состояния\n`);
+  });
+}
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  console.log('\n🛑 Останавливаем сервер...');
+  
+  if (botClient && botClient.connected) {
+    await botClient.disconnect();
+  }
+  
+  process.exit(0);
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🔒 Защищенный сервер запущен на порту ${PORT}`);
-  console.log(`\nКлюч шифрования: ${ENCRYPTION_KEY.substring(0, 10)}...`);
-});
+// Запускаем сервер
+startServer().catch(console.error);

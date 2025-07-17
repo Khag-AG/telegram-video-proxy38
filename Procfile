@@ -1,1 +1,1 @@
-web: node secure-server.js
+web: node bot-server.js
