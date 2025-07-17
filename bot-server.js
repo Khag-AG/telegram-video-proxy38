@@ -66,109 +66,70 @@ async function initializeBot() {
 // Основной эндпоинт для Make.com
 app.post('/download-bot', async (req, res) => {
   try {
-    const { channelUsername, fileName } = req.body;
+    const { file_id, file_name } = req.body;
     
-    console.log(`📥 Запрос на скачивание: ${fileName} из ${channelUsername}`);
+    console.log(`📥 Запрос на скачивание файла по file_id: ${file_id}`);
     
-    if (!channelUsername || !fileName) {
+    if (!file_id) {
       return res.status(400).json({ 
-        error: 'Необходимо указать channelUsername и fileName' 
+        error: 'Необходимо указать file_id' 
       });
     }
 
-    // Убираем @ если есть
-    const cleanUsername = channelUsername.replace('@', '');
-    
     try {
-      // Получаем канал/чат
-      let entity;
-      try {
-        // Сначала пробуем как username
-        entity = await botClient.getEntity(cleanUsername);
-      } catch (e) {
-        // Если не удалось, пробуем как ID чата
-        const chatId = parseInt(cleanUsername);
-        if (!isNaN(chatId)) {
-          entity = await botClient.getEntity(chatId);
-        } else {
-          throw e;
-        }
-      }
+      // Получаем информацию о файле через Bot API
+      const fileInfo = await botClient.invoke(
+        new Api.upload.GetFile({
+          location: new Api.InputDocumentFileLocation({
+            id: BigInt(file_id.split('_')[0]),
+            accessHash: BigInt(0),
+            fileReference: Buffer.from(file_id, 'base64'),
+            thumbSize: ''
+          }),
+          offset: BigInt(0),
+          limit: 1024 * 1024
+        })
+      );
       
-      console.log(`📍 Найден канал/чат: ${entity.title || entity.firstName || 'Unknown'}`);
+      console.log('File info:', fileInfo);
       
-      // Ищем сообщение с файлом
-      const messages = await botClient.getMessages(entity, { 
-        limit: 100  // Увеличиваем лимит для поиска
-      });
+    } catch (e) {
+      // Если не получилось через MTProto, пробуем через HTTP API
+      console.log('Пробуем через HTTP API...');
       
-      console.log(`📨 Найдено сообщений: ${messages.length}`);
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
       
-      let targetMessage = null;
-      let fileInfo = null;
+      // Получаем путь к файлу
+      const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${file_id}`;
+      const fileResponse = await fetch(getFileUrl);
+      const fileData = await fileResponse.json();
       
-      for (const message of messages) {
-        if (message.media) {
-          let docFileName = null;
-          let document = null;
-          
-          // Проверяем разные типы медиа
-          if (message.media.className === 'MessageMediaDocument' && message.media.document) {
-            document = message.media.document;
-            const attrs = document.attributes || [];
-            const fileAttr = attrs.find(attr => attr.className === 'DocumentAttributeFilename');
-            docFileName = fileAttr ? fileAttr.fileName : null;
-          }
-          
-          // Проверяем совпадение имени файла
-          if (docFileName === fileName) {
-            targetMessage = message;
-            fileInfo = {
-              fileName: docFileName,
-              fileSize: document.size,
-              mimeType: document.mimeType
-            };
-            console.log(`✅ Файл найден: ${docFileName} (${(fileInfo.fileSize / 1024 / 1024).toFixed(2)} MB)`);
-            break;
-          }
-        }
-      }
-      
-      if (!targetMessage) {
-        // Выводим список найденных файлов для отладки
-        console.log('📋 Доступные файлы в канале:');
-        for (const msg of messages) {
-          if (msg.media && msg.media.document) {
-            const attrs = msg.media.document.attributes || [];
-            const fileAttr = attrs.find(attr => attr.className === 'DocumentAttributeFilename');
-            if (fileAttr) {
-              console.log(`  - ${fileAttr.fileName}`);
-            }
-          }
-        }
-        
-        return res.status(404).json({ 
-          error: 'Файл не найден',
-          hint: 'Проверьте правильность имени файла и доступность канала для бота'
+      if (!fileData.ok) {
+        return res.status(400).json({ 
+          error: 'Не удалось получить информацию о файле',
+          details: fileData.description 
         });
       }
       
-      // Генерируем уникальное имя для временного файла
+      console.log('File path:', fileData.result.file_path);
+      
+      // Скачиваем файл
+      const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${fileData.result.file_path}`;
+      const downloadResponse = await fetch(downloadUrl);
+      
+      if (!downloadResponse.ok) {
+        return res.status(400).json({ 
+          error: 'Не удалось скачать файл' 
+        });
+      }
+      
+      const buffer = Buffer.from(await downloadResponse.arrayBuffer());
+      
+      // Генерируем имя файла
+      const fileName = file_name || `file_${Date.now()}.bin`;
       const uploadId = uuidv4();
       const tempFileName = `${uploadId}_${fileName}`;
       const localPath = path.join(uploadDir, tempFileName);
-      
-      console.log(`⏬ Начинаем загрузку файла...`);
-      
-      // Загружаем файл
-      const buffer = await botClient.downloadMedia(targetMessage.media, {
-        progressCallback: (downloaded, total) => {
-          const percent = Math.round((downloaded / total) * 100);
-          if (percent % 10 === 0) {
-            console.log(`  Прогресс: ${percent}% (${(downloaded / 1024 / 1024).toFixed(2)} / ${(total / 1024 / 1024).toFixed(2)} MB)`);
-          }
-        }
-      });
       
       // Сохраняем файл
       await fs.writeFile(localPath, buffer);
@@ -178,7 +139,7 @@ app.post('/download-bot', async (req, res) => {
       
       // Для файлов меньше 95MB - возвращаем напрямую
       if (stats.size < 95 * 1024 * 1024) {
-        res.setHeader('Content-Type', fileInfo.mimeType || 'application/octet-stream');
+        res.setHeader('Content-Type', 'application/octet-stream');
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         res.setHeader('Content-Length', stats.size);
         
@@ -198,7 +159,6 @@ app.post('/download-bot', async (req, res) => {
         const downloadToken = Buffer.from(JSON.stringify({
           uploadId: uploadId,
           fileName: fileName,
-          mimeType: fileInfo.mimeType,
           exp: Date.now() + (30 * 60 * 1000) // 30 минут
         })).toString('base64');
         
@@ -209,7 +169,6 @@ app.post('/download-bot', async (req, res) => {
           fileName: fileName,
           fileSize: stats.size,
           fileSizeMB: (stats.size / 1024 / 1024).toFixed(2),
-          mimeType: fileInfo.mimeType,
           downloadUrl: `${baseUrl}/file/${downloadToken}`,
           expiresIn: '30 minutes'
         });
@@ -222,23 +181,6 @@ app.post('/download-bot', async (req, res) => {
           } catch (e) {}
         }, 30 * 60 * 1000);
       }
-      
-    } catch (error) {
-      console.error('❌ Ошибка при работе с Telegram:', error);
-      
-      if (error.message.includes('CHANNEL_PRIVATE')) {
-        return res.status(403).json({ 
-          error: 'Канал приватный. Убедитесь, что бот добавлен в канал как администратор' 
-        });
-      }
-      
-      if (error.message.includes('USERNAME_NOT_OCCUPIED')) {
-        return res.status(404).json({ 
-          error: 'Канал не найден. Проверьте правильность username' 
-        });
-      }
-      
-      throw error;
     }
     
   } catch (error) {
