@@ -66,64 +66,49 @@ async function initializeBot() {
 // Основной эндпоинт для Make.com
 app.post('/download-bot', async (req, res) => {
   try {
-    const { file_id, file_name } = req.body;
+    const { file_id, file_name, message_id, chat_id } = req.body;
     
-    console.log(`📥 Запрос на скачивание файла по file_id: ${file_id}`);
+    console.log(`📥 Запрос на скачивание: ${file_name} (${file_id})`);
+    console.log(`📍 Message ID: ${message_id}, Chat ID: ${chat_id}`);
     
-    if (!file_id) {
+    if (!file_id || !message_id || !chat_id) {
       return res.status(400).json({ 
-        error: 'Необходимо указать file_id' 
+        error: 'Необходимо указать file_id, message_id и chat_id' 
       });
     }
 
     try {
-      // Получаем информацию о файле через Bot API
-      const fileInfo = await botClient.invoke(
-        new Api.upload.GetFile({
-          location: new Api.InputDocumentFileLocation({
-            id: BigInt(file_id.split('_')[0]),
-            accessHash: BigInt(0),
-            fileReference: Buffer.from(file_id, 'base64'),
-            thumbSize: ''
-          }),
-          offset: BigInt(0),
-          limit: 1024 * 1024
+      // Для больших файлов используем MTProto
+      console.log('Используем MTProto для больших файлов...');
+      
+      // Получаем сообщение по ID
+      const messages = await botClient.invoke(
+        new Api.channels.GetMessages({
+          channel: await botClient.getEntity(chat_id),
+          id: [new Api.InputMessageID({ id: message_id })]
         })
       );
       
-      console.log('File info:', fileInfo);
-      
-    } catch (e) {
-      // Если не получилось через MTProto, пробуем через HTTP API
-      console.log('Пробуем через HTTP API...');
-      
-      const botToken = process.env.TELEGRAM_BOT_TOKEN;
-      
-      // Получаем путь к файлу
-      const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${file_id}`;
-      const fileResponse = await fetch(getFileUrl);
-      const fileData = await fileResponse.json();
-      
-      if (!fileData.ok) {
-        return res.status(400).json({ 
-          error: 'Не удалось получить информацию о файле',
-          details: fileData.description 
-        });
+      if (!messages.messages || messages.messages.length === 0) {
+        return res.status(404).json({ error: 'Сообщение не найдено' });
       }
       
-      console.log('File path:', fileData.result.file_path);
-      
-      // Скачиваем файл
-      const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${fileData.result.file_path}`;
-      const downloadResponse = await fetch(downloadUrl);
-      
-      if (!downloadResponse.ok) {
-        return res.status(400).json({ 
-          error: 'Не удалось скачать файл' 
-        });
+      const message = messages.messages[0];
+      if (!message.media) {
+        return res.status(404).json({ error: 'В сообщении нет медиа' });
       }
       
-      const buffer = Buffer.from(await downloadResponse.arrayBuffer());
+      console.log(`⏬ Начинаем загрузку файла через MTProto...`);
+      
+      // Загружаем файл
+      const buffer = await botClient.downloadMedia(message.media, {
+        progressCallback: (downloaded, total) => {
+          const percent = Math.round((downloaded / total) * 100);
+          if (percent % 10 === 0) {
+            console.log(`  Прогресс: ${percent}% (${(downloaded / 1024 / 1024).toFixed(2)} / ${(total / 1024 / 1024).toFixed(2)} MB)`);
+          }
+        }
+      });
       
       // Генерируем имя файла
       const fileName = file_name || `file_${Date.now()}.bin`;
@@ -180,6 +165,49 @@ app.post('/download-bot', async (req, res) => {
             console.log(`🗑️ Временный файл удален: ${tempFileName}`);
           } catch (e) {}
         }, 30 * 60 * 1000);
+      }
+      
+    } catch (error) {
+      console.error('❌ Ошибка MTProto:', error);
+      
+      // Если файл меньше 20MB, пробуем через Bot API
+      console.log('Пробуем через Bot API для маленьких файлов...');
+      
+      const botToken = process.env.TELEGRAM_BOT_TOKEN;
+      const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${file_id}`;
+      
+      try {
+        const fileResponse = await fetch(getFileUrl);
+        const fileData = await fileResponse.json();
+        
+        if (!fileData.ok) {
+          return res.status(400).json({ 
+            error: 'Не удалось получить информацию о файле',
+            details: fileData.description 
+          });
+        }
+        
+        // Скачиваем файл
+        const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${fileData.result.file_path}`;
+        const downloadResponse = await fetch(downloadUrl);
+        
+        if (!downloadResponse.ok) {
+          return res.status(400).json({ 
+            error: 'Не удалось скачать файл' 
+          });
+        }
+        
+        const buffer = Buffer.from(await downloadResponse.arrayBuffer());
+        
+        res.setHeader('Content-Type', 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${file_name || 'file.bin'}"`);
+        res.send(buffer);
+        
+      } catch (apiError) {
+        return res.status(500).json({ 
+          error: 'Не удалось скачать файл',
+          details: apiError.message 
+        });
       }
     }
     
