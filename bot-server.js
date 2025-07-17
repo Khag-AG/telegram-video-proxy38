@@ -328,7 +328,9 @@ setInterval(async () => {
 async function startServer() {
   await initializeBot();
   
-  app.listen(PORT, () => {
+  const PORT = process.env.PORT || 3000;
+  
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 Сервер запущен на порту ${PORT}`);
     console.log(`📡 Эндпоинты:`);
     console.log(`   POST /download-bot - Скачивание файлов через бота`);
