@@ -13,12 +13,13 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
-// Обслуживание статических файлов из папки uploads
-app.use('/uploads', express.static(uploadDir));
 
 // Директории
 const uploadDir = path.join(__dirname, 'uploads');
 fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
+
+// Обслуживание статических файлов из папки uploads
+app.use('/uploads', express.static(uploadDir));
 
 // Глобальный клиент бота
 let botClient = null;
