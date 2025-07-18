@@ -129,11 +129,12 @@ app.post('/download-bot', async (req, res) => {
         exp: Date.now() + (30 * 60 * 1000) // 30 минут
       })).toString('base64url'); // Используем base64url для безопасности в URL
       
-      // Получаем правильный домен
-      const host = req.get('host');
-      const protocol = req.get('x-forwarded-proto') || 'https';
-      const baseUrl = `${protocol}://${host}`;
+      // Используем правильный публичный домен Railway
+      const publicDomain = 'telegram-video-proxy38-production.up.railway.app';
+      const baseUrl = `https://${publicDomain}`;
       const downloadUrl = `${baseUrl}/file/${downloadToken}`;
+      
+      console.log(`🔗 Сгенерирована ссылка: ${downloadUrl}`);
       
       // Для больших файлов (>50MB) отправляем только ссылку
       const fileSizeMB = stats.size / 1024 / 1024;
@@ -197,8 +198,8 @@ app.get('/file/:token', async (req, res) => {
   try {
     const { token } = req.params;
     
-    // Декодируем токен
-    const data = JSON.parse(Buffer.from(token, 'base64').toString());
+    // Декодируем токен - используем base64url
+    const data = JSON.parse(Buffer.from(token, 'base64url').toString());
     
     if (Date.now() > data.exp) {
       return res.status(403).json({ error: 'Ссылка истекла' });
@@ -210,7 +211,7 @@ app.get('/file/:token', async (req, res) => {
     try {
       const stats = await fs.stat(filePath);
       
-      res.setHeader('Content-Type', data.mimeType || 'application/octet-stream');
+      res.setHeader('Content-Type', 'application/octet-stream');
       res.setHeader('Content-Length', stats.size);
       res.setHeader('Content-Disposition', `attachment; filename="${data.fileName}"`);
       
