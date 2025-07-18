@@ -64,7 +64,7 @@ async function initializeBot() {
 }
 
 // Основной эндпоинт для Make.com
-aapp.post('/download-bot', async (req, res) => {
+app.post('/download-bot', async (req, res) => {
   try {
     const { file_id, file_name, message_id, chat_id } = req.body;
     
