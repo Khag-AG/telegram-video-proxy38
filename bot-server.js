@@ -113,10 +113,12 @@ app.post('/download-bot', async (req, res) => {
       });
       
       // Генерируем имя файла
-      const fileName = file_name || `file_${Date.now()}.mp4`;
+      const originalFileName = file_name || `file_${Date.now()}.mp4`;
       const uploadId = uuidv4();
-      const cleanFileName = `${uploadId}_${fileName}`;
-      const localPath = path.join(uploadDir, cleanFileName);
+      // Создаем безопасное имя файла для URL (только латиница и цифры)
+      const extension = path.extname(originalFileName) || '.mp4';
+      const safeFileName = `${uploadId}${extension}`;
+      const localPath = path.join(uploadDir, safeFileName);
       
       // Сохраняем файл
       await fs.writeFile(localPath, buffer);
@@ -127,15 +129,16 @@ app.post('/download-bot', async (req, res) => {
       
       // Создаем прямую ссылку на файл
       const publicDomain = 'telegram-video-proxy38-production.up.railway.app';
-      const directUrl = `https://${publicDomain}/uploads/${cleanFileName}`;
+      const directUrl = `https://${publicDomain}/uploads/${safeFileName}`;
       
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📤 Файл размером ${fileSizeMB.toFixed(2)} MB`);
       
       // Отправляем ответ в формате, понятном Make.com
       res.json({
-        fileName: fileName,
-        filePath: `videos/${fileName}`,
+        fileName: originalFileName, // Оригинальное имя для отображения
+        safeFileName: safeFileName, // Безопасное имя для URL
+        filePath: `videos/${originalFileName}`,
         fileUrl: directUrl,
         fileSize: stats.size,
         fileSizeMB: fileSizeMB.toFixed(2),
@@ -146,7 +149,7 @@ app.post('/download-bot', async (req, res) => {
       setTimeout(async () => {
         try {
           await fs.unlink(localPath);
-          console.log(`🗑️ Временный файл удален: ${cleanFileName}`);
+          console.log(`🗑️ Временный файл удален: ${safeFileName}`);
         } catch (e) {}
       }, 30 * 60 * 1000);
       
