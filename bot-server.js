@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const { pool, initDatabase } = require('./db');
 require('dotenv').config();
 
 const app = express();
@@ -21,58 +22,120 @@ fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
 // Обслуживание статических файлов из папки uploads
 app.use('/uploads', express.static(uploadDir));
 
-// Глобальный клиент бота
-let botClient = null;
+// Хранилище активных ботов
+const activeBots = new Map();
 
-// Инициализация бота
-async function initializeBot() {
+// Инициализация всех ботов при запуске
+async function initializeAllBots() {
+  await initDatabase();
+  
   try {
-    const apiId = parseInt(process.env.TELEGRAM_API_ID);
-    const apiHash = process.env.TELEGRAM_API_HASH;
-    const botToken = process.env.TELEGRAM_BOT_TOKEN;
-
-    if (!apiId || !apiHash || !botToken) {
-      throw new Error('Отсутствуют необходимые переменные окружения');
-    }
-
-    console.log('🤖 Инициализация Telegram бота...');
-
-    // Создаем клиент для бота
-    botClient = new TelegramClient(
-      new StringSession(''),
-      apiId,
-      apiHash,
-      {
-        connectionRetries: 5,
-        useWSS: false
-      }
-    );
-
-    // Подключаемся как бот
-    await botClient.start({
-      botAuthToken: botToken,
-      onError: (err) => console.error('Ошибка авторизации:', err),
-    });
-
-    console.log('✅ Бот успешно подключен!');
+    const result = await pool.query('SELECT * FROM bots WHERE is_active = true');
+    const bots = result.rows;
     
-    // Получаем информацию о боте
-    const me = await botClient.getMe();
-    console.log(`🤖 Бот: @${me.username} (ID: ${me.id})`);
-
+    console.log(`🤖 Найдено ${bots.length} активных ботов`);
+    
+    for (const bot of bots) {
+      try {
+        await initializeBotClient(bot);
+      } catch (error) {
+        console.error(`❌ Ошибка инициализации бота ${bot.name}:`, error);
+        // Отмечаем бота как неактивного при ошибке
+        await pool.query('UPDATE bots SET is_active = false WHERE id = $1', [bot.id]);
+      }
+    }
   } catch (error) {
-    console.error('❌ Ошибка инициализации бота:', error);
-    process.exit(1);
+    console.error('❌ Ошибка загрузки ботов из БД:', error);
+  }
+}
+
+// Инициализация клиента бота
+async function initializeBotClient(botData) {
+  const { id, name, token, api_id, api_hash } = botData;
+  
+  console.log(`🔄 Инициализация бота: ${name}`);
+  
+  const client = new TelegramClient(
+    new StringSession(''),
+    parseInt(api_id),
+    api_hash,
+    {
+      connectionRetries: 5,
+      useWSS: false
+    }
+  );
+
+  await client.start({
+    botAuthToken: token,
+    onError: (err) => console.error(`Ошибка авторизации бота ${name}:`, err),
+  });
+
+  const me = await client.getMe();
+  console.log(`✅ Бот ${name} подключен: @${me.username} (ID: ${me.id})`);
+  
+  activeBots.set(id, {
+    id,
+    name,
+    client,
+    info: me
+  });
+}
+
+// Получение бота для канала
+async function getBotForChannel(chatId) {
+  try {
+    // Ищем привязку канала к боту
+    const result = await pool.query(
+      'SELECT bot_id FROM channel_bot_mapping WHERE chat_id = $1',
+      [chatId]
+    );
+    
+    if (result.rows.length === 0) {
+      console.log(`⚠️ Нет привязки для канала ${chatId}`);
+      
+      // Если привязки нет, используем первого активного бота
+      const firstBot = Array.from(activeBots.values())[0];
+      if (firstBot) {
+        console.log(`📌 Используем бота по умолчанию: ${firstBot.name}`);
+        
+        // Автоматически создаем привязку
+        await pool.query(
+          'INSERT INTO channel_bot_mapping (chat_id, bot_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [chatId, firstBot.id]
+        );
+        
+        return firstBot;
+      }
+      
+      throw new Error('Нет доступных ботов');
+    }
+    
+    const botId = result.rows[0].bot_id;
+    const bot = activeBots.get(botId);
+    
+    if (!bot) {
+      throw new Error(`Бот с ID ${botId} не активен`);
+    }
+    
+    return bot;
+  } catch (error) {
+    console.error('Ошибка получения бота для канала:', error);
+    throw error;
   }
 }
 
 // Основной эндпоинт для Make.com
 app.post('/download-bot', async (req, res) => {
+  const startTime = Date.now();
+  let bot = null;
+  
   try {
     const { file_id, file_name, message_id, chat_id } = req.body;
     
-    console.log(`📥 Запрос на скачивание: ${file_name} (${file_id})`);
-    console.log(`📍 Message ID: ${message_id}, Chat ID: ${chat_id}`);
+    console.log(`\n📥 Новый запрос на скачивание:`);
+    console.log(`   Файл: ${file_name} (${file_id})`);
+    console.log(`   Канал: ${chat_id}`);
+    console.log(`   Сообщение: ${message_id}`);
     
     if (!file_id || !message_id || !chat_id) {
       return res.status(400).json({ 
@@ -80,30 +143,32 @@ app.post('/download-bot', async (req, res) => {
       });
     }
 
+    // Получаем подходящего бота для канала
+    bot = await getBotForChannel(chat_id);
+    console.log(`🤖 Используем бота: ${bot.name}`);
+
     try {
-      console.log('Используем MTProto для скачивания...');
-      
       // Получаем сообщение по ID
-      const messages = await botClient.invoke(
+      const messages = await bot.client.invoke(
         new Api.channels.GetMessages({
-          channel: await botClient.getEntity(chat_id),
+          channel: await bot.client.getEntity(chat_id),
           id: [new Api.InputMessageID({ id: message_id })]
         })
       );
       
       if (!messages.messages || messages.messages.length === 0) {
-        return res.status(404).json({ error: 'Сообщение не найдено' });
+        throw new Error('Сообщение не найдено');
       }
       
       const message = messages.messages[0];
       if (!message.media) {
-        return res.status(404).json({ error: 'В сообщении нет медиа' });
+        throw new Error('В сообщении нет медиа');
       }
       
       console.log(`⏬ Начинаем загрузку файла через MTProto...`);
       
       // Загружаем файл
-      const buffer = await botClient.downloadMedia(message.media, {
+      const buffer = await bot.client.downloadMedia(message.media, {
         progressCallback: (downloaded, total) => {
           const percent = Math.round((downloaded / total) * 100);
           if (percent % 10 === 0) {
@@ -115,7 +180,6 @@ app.post('/download-bot', async (req, res) => {
       // Генерируем имя файла
       const originalFileName = file_name || `file_${Date.now()}.mp4`;
       const uploadId = uuidv4();
-      // Создаем безопасное имя файла для URL (только латиница и цифры)
       const extension = path.extname(originalFileName) || '.mp4';
       const safeFileName = `${uploadId}${extension}`;
       const localPath = path.join(uploadDir, safeFileName);
@@ -128,20 +192,31 @@ app.post('/download-bot', async (req, res) => {
       const fileSizeMB = stats.size / 1024 / 1024;
       
       // Создаем прямую ссылку на файл
-      const publicDomain = 'telegram-video-proxy38-production.up.railway.app';
+      const publicDomain = process.env.PUBLIC_DOMAIN || 'telegram-video-proxy38-production.up.railway.app';
       const directUrl = `https://${publicDomain}/uploads/${safeFileName}`;
       
+      // Логируем успешную загрузку
+      await pool.query(
+        `INSERT INTO download_logs (chat_id, bot_id, file_name, file_size, status) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [chat_id, bot.id, originalFileName, stats.size, 'success']
+      );
+      
+      const duration = Date.now() - startTime;
+      console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
-      console.log(`📤 Файл размером ${fileSizeMB.toFixed(2)} MB`);
+      console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
       // Отправляем ответ в формате, понятном Make.com
       res.json({
-        fileName: originalFileName, // Оригинальное имя для отображения
-        safeFileName: safeFileName, // Безопасное имя для URL
+        fileName: originalFileName,
+        safeFileName: safeFileName,
         filePath: `videos/${originalFileName}`,
         fileUrl: directUrl,
         fileSize: stats.size,
         fileSizeMB: fileSizeMB.toFixed(2),
+        botUsed: bot.name,
+        duration: duration,
         success: true
       });
       
@@ -155,6 +230,14 @@ app.post('/download-bot', async (req, res) => {
       
     } catch (error) {
       console.error('❌ Ошибка MTProto:', error);
+      
+      // Логируем ошибку
+      await pool.query(
+        `INSERT INTO download_logs (chat_id, bot_id, file_name, status, error_message) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [chat_id, bot.id, file_name, 'error', error.message]
+      );
+      
       return res.status(500).json({ 
         error: 'Не удалось скачать файл через MTProto',
         details: error.message 
@@ -170,54 +253,37 @@ app.post('/download-bot', async (req, res) => {
   }
 });
 
-// Эндпоинт для скачивания больших файлов по токену
-app.get('/file/:token', async (req, res) => {
-  try {
-    const { token } = req.params;
-    
-    // Декодируем токен - используем base64url
-    const data = JSON.parse(Buffer.from(token, 'base64url').toString());
-    
-    if (Date.now() > data.exp) {
-      return res.status(403).json({ error: 'Ссылка истекла' });
-    }
-    
-    const tempFileName = `${data.uploadId}_${data.fileName}`;
-    const filePath = path.join(uploadDir, tempFileName);
-    
-    try {
-      const stats = await fs.stat(filePath);
-      
-      res.setHeader('Content-Type', 'application/octet-stream');
-      res.setHeader('Content-Length', stats.size);
-      res.setHeader('Content-Disposition', `attachment; filename="${data.fileName}"`);
-      
-      const stream = require('fs').createReadStream(filePath);
-      stream.pipe(res);
-      
-    } catch (error) {
-      res.status(404).json({ error: 'Файл не найден' });
-    }
-    
-  } catch (error) {
-    res.status(400).json({ error: 'Неверный токен' });
-  }
+// Эндпоинт для получения информации о ботах
+app.get('/bots-status', async (req, res) => {
+  const botsInfo = Array.from(activeBots.values()).map(bot => ({
+    id: bot.id,
+    name: bot.name,
+    username: bot.info.username,
+    active: true
+  }));
+  
+  res.json({
+    total: botsInfo.length,
+    bots: botsInfo
+  });
 });
 
 // Health check endpoints
 app.get('/', (req, res) => {
   res.json({ 
     status: 'OK',
-    server: 'Telegram Bot Video Proxy',
+    server: 'Multi-Bot Telegram Video Proxy',
     version: '4.0.0',
-    bot: botClient ? 'Connected' : 'Not connected'
+    activeBots: activeBots.size,
+    adminPanel: `Port ${process.env.ADMIN_PORT || 3001}`
   });
 });
 
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'OK',
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    bots: activeBots.size
   });
 });
 
@@ -246,16 +312,15 @@ setInterval(async () => {
 
 // Запуск сервера
 async function startServer() {
-  await initializeBot();
-  
-  const PORT = process.env.PORT || 3000;
+  await initializeAllBots();
   
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 Сервер запущен на порту ${PORT}`);
     console.log(`📡 Эндпоинты:`);
-    console.log(`   POST /download-bot - Скачивание файлов через бота`);
-    console.log(`   GET  /file/:token  - Получение больших файлов`);
-    console.log(`   GET  /health       - Проверка состояния\n`);
+    console.log(`   POST /download-bot  - Скачивание файлов`);
+    console.log(`   GET  /bots-status   - Статус ботов`);
+    console.log(`   GET  /health        - Проверка состояния`);
+    console.log(`\n🔧 Админ панель доступна на порту ${process.env.ADMIN_PORT || 3001}\n`);
   });
 }
 
@@ -263,9 +328,15 @@ async function startServer() {
 process.on('SIGINT', async () => {
   console.log('\n🛑 Останавливаем сервер...');
   
-  if (botClient && botClient.connected) {
-    await botClient.disconnect();
+  // Отключаем всех ботов
+  for (const bot of activeBots.values()) {
+    if (bot.client && bot.client.connected) {
+      await bot.client.disconnect();
+    }
   }
+  
+  // Закрываем пул соединений с БД
+  await pool.end();
   
   process.exit(0);
 });

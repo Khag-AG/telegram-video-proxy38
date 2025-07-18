@@ -1,11 +1,13 @@
 {
   "name": "telegram-video-proxy",
-  "version": "3.0.0",
-  "description": "Secure Telegram video proxy using MTProto",
+  "version": "4.0.0",
+  "description": "Multi-bot Telegram video proxy with admin panel",
   "main": "bot-server.js",
   "scripts": {
     "start": "node bot-server.js",
-    "dev": "nodemon bot-server.js"
+    "admin": "node admin-panel.js",
+    "dev": "nodemon bot-server.js",
+    "dev-admin": "nodemon admin-panel.js"
   },
   "engines": {
     "node": ">=14.0.0"
@@ -15,7 +17,10 @@
     "express": "^4.18.2",
     "dotenv": "^16.3.1",
     "uuid": "^9.0.1",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "pg": "^8.11.3",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
