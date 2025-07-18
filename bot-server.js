@@ -64,7 +64,7 @@ async function initializeBot() {
 }
 
 // Основной эндпоинт для Make.com
-app.post('/download-bot', async (req, res) => {
+aapp.post('/download-bot', async (req, res) => {
   try {
     const { file_id, file_name, message_id, chat_id } = req.body;
     
@@ -132,25 +132,36 @@ app.post('/download-bot', async (req, res) => {
       const baseUrl = `https://${req.get('host')}`;
       const downloadUrl = `${baseUrl}/file/${downloadToken}`;
       
-      // ВСЕГДА возвращаем и ссылку и данные
-      console.log(`📤 Отправляем файл размером ${(stats.size / 1024 / 1024).toFixed(2)} MB...`);
+      // Для больших файлов (>50MB) отправляем только ссылку
+      const fileSizeMB = stats.size / 1024 / 1024;
+      console.log(`📤 Файл размером ${fileSizeMB.toFixed(2)} MB`);
       
-      // Читаем файл для отправки
-      const fileBuffer = await fs.readFile(localPath);
-      
-      // Устанавливаем большой лимит для ответа
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      
-      // Возвращаем JSON с данными
-      res.json({
-        success: true,
-        fileName: fileName,
-        fileSize: stats.size,
-        fileSizeMB: (stats.size / 1024 / 1024).toFixed(2),
-        downloadUrl: downloadUrl,
-        expiresIn: '30 minutes',
-        fileData: fileBuffer.toString('base64') // ВСЕГДА отправляем данные
-      });
+      if (fileSizeMB > 50) {
+        // Для больших файлов отправляем только ссылку
+        res.json({
+          success: true,
+          fileName: fileName,
+          fileSize: stats.size,
+          fileSizeMB: fileSizeMB.toFixed(2),
+          downloadUrl: downloadUrl,
+          expiresIn: '30 minutes',
+          largeFile: true,
+          message: 'Файл слишком большой для прямой передачи. Используйте ссылку для скачивания.'
+        });
+      } else {
+        // Для маленьких файлов можем отправить и данные
+        const fileBuffer = await fs.readFile(localPath);
+        res.json({
+          success: true,
+          fileName: fileName,
+          fileSize: stats.size,
+          fileSizeMB: fileSizeMB.toFixed(2),
+          downloadUrl: downloadUrl,
+          expiresIn: '30 minutes',
+          fileData: fileBuffer.toString('base64'),
+          largeFile: false
+        });
+      }
       
       // Удаляем через 30 минут
       setTimeout(async () => {
@@ -162,76 +173,10 @@ app.post('/download-bot', async (req, res) => {
       
     } catch (error) {
       console.error('❌ Ошибка MTProto:', error);
-      
-      // Попытка через Bot API для маленьких файлов
-      console.log('Пробуем через Bot API...');
-      
-      const botToken = process.env.TELEGRAM_BOT_TOKEN;
-      const getFileUrl = `https://api.telegram.org/bot${botToken}/getFile?file_id=${file_id}`;
-      
-      try {
-        const fileResponse = await fetch(getFileUrl);
-        const fileData = await fileResponse.json();
-        
-        if (!fileData.ok) {
-          return res.status(400).json({ 
-            error: 'Не удалось получить информацию о файле',
-            details: fileData.description 
-          });
-        }
-        
-        // Скачиваем файл
-        const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${fileData.result.file_path}`;
-        const downloadResponse = await fetch(downloadUrl);
-        
-        if (!downloadResponse.ok) {
-          return res.status(400).json({ 
-            error: 'Не удалось скачать файл' 
-          });
-        }
-        
-        const buffer = Buffer.from(await downloadResponse.arrayBuffer());
-        
-        // Сохраняем для генерации ссылки
-        const fileName = file_name || 'file.bin';
-        const uploadId = uuidv4();
-        const tempFileName = `${uploadId}_${fileName}`;
-        const localPath = path.join(uploadDir, tempFileName);
-        
-        await fs.writeFile(localPath, buffer);
-        
-        // Генерируем токен
-        const downloadToken = Buffer.from(JSON.stringify({
-          uploadId: uploadId,
-          fileName: fileName,
-          exp: Date.now() + (30 * 60 * 1000)
-        })).toString('base64');
-        
-        const baseUrl = `https://${req.get('host')}`;
-        
-        res.json({
-          success: true,
-          fileName: fileName,
-          fileSize: buffer.length,
-          fileSizeMB: (buffer.length / 1024 / 1024).toFixed(2),
-          downloadUrl: `${baseUrl}/file/${downloadToken}`,
-          expiresIn: '30 minutes',
-          fileData: buffer.toString('base64') // ВСЕГДА отправляем данные
-        });
-        
-        // Удаляем через 30 минут
-        setTimeout(async () => {
-          try {
-            await fs.unlink(localPath);
-          } catch (e) {}
-        }, 30 * 60 * 1000);
-        
-      } catch (apiError) {
-        return res.status(500).json({ 
-          error: 'Не удалось скачать файл',
-          details: apiError.message 
-        });
-      }
+      return res.status(500).json({ 
+        error: 'Не удалось скачать файл через MTProto',
+        details: error.message 
+      });
     }
     
   } catch (error) {
