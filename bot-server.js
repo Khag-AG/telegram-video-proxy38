@@ -127,9 +127,12 @@ app.post('/download-bot', async (req, res) => {
         uploadId: uploadId,
         fileName: fileName,
         exp: Date.now() + (30 * 60 * 1000) // 30 минут
-      })).toString('base64');
+      })).toString('base64url'); // Используем base64url для безопасности в URL
       
-      const baseUrl = `https://${req.get('host')}`;
+      // Получаем правильный домен
+      const host = req.get('host');
+      const protocol = req.get('x-forwarded-proto') || 'https';
+      const baseUrl = `${protocol}://${host}`;
       const downloadUrl = `${baseUrl}/file/${downloadToken}`;
       
       // Для больших файлов (>50MB) отправляем только ссылку
@@ -149,8 +152,9 @@ app.post('/download-bot', async (req, res) => {
           message: 'Файл слишком большой для прямой передачи. Используйте ссылку для скачивания.'
         });
       } else {
-        // Для маленьких файлов можем отправить и данные
+        // Для маленьких файлов отправляем данные в правильном формате
         const fileBuffer = await fs.readFile(localPath);
+        
         res.json({
           success: true,
           fileName: fileName,
