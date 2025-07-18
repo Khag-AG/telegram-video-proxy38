@@ -13,6 +13,8 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '100mb' }));
+// Обслуживание статических файлов из папки uploads
+app.use('/uploads', express.static(uploadDir));
 
 // Директории
 const uploadDir = path.join(__dirname, 'uploads');
@@ -78,7 +80,6 @@ app.post('/download-bot', async (req, res) => {
     }
 
     try {
-      // Для больших файлов используем MTProto
       console.log('Используем MTProto для скачивания...');
       
       // Получаем сообщение по ID
@@ -111,68 +112,40 @@ app.post('/download-bot', async (req, res) => {
       });
       
       // Генерируем имя файла
-      const fileName = file_name || `file_${Date.now()}.bin`;
+      const fileName = file_name || `file_${Date.now()}.mp4`;
       const uploadId = uuidv4();
-      const tempFileName = `${uploadId}_${fileName}`;
-      const localPath = path.join(uploadDir, tempFileName);
+      const cleanFileName = `${uploadId}_${fileName}`;
+      const localPath = path.join(uploadDir, cleanFileName);
       
       // Сохраняем файл
       await fs.writeFile(localPath, buffer);
       console.log(`💾 Файл сохранен: ${localPath}`);
       
       const stats = await fs.stat(localPath);
-      
-      // Генерируем токен для ссылки
-      const downloadToken = Buffer.from(JSON.stringify({
-        uploadId: uploadId,
-        fileName: fileName,
-        exp: Date.now() + (30 * 60 * 1000) // 30 минут
-      })).toString('base64url'); // Используем base64url для безопасности в URL
-      
-      // Используем правильный публичный домен Railway
-      const publicDomain = 'telegram-video-proxy38-production.up.railway.app';
-      const baseUrl = `https://${publicDomain}`;
-      const downloadUrl = `${baseUrl}/file/${downloadToken}`;
-      
-      console.log(`🔗 Сгенерирована ссылка: ${downloadUrl}`);
-      
-      // Для больших файлов (>50MB) отправляем только ссылку
       const fileSizeMB = stats.size / 1024 / 1024;
+      
+      // Создаем прямую ссылку на файл
+      const publicDomain = 'telegram-video-proxy38-production.up.railway.app';
+      const directUrl = `https://${publicDomain}/uploads/${cleanFileName}`;
+      
+      console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📤 Файл размером ${fileSizeMB.toFixed(2)} MB`);
       
-      if (fileSizeMB > 50) {
-        // Для больших файлов отправляем только ссылку
-        res.json({
-          success: true,
-          fileName: fileName,
-          fileSize: stats.size,
-          fileSizeMB: fileSizeMB.toFixed(2),
-          downloadUrl: downloadUrl,
-          expiresIn: '30 minutes',
-          largeFile: true,
-          message: 'Файл слишком большой для прямой передачи. Используйте ссылку для скачивания.'
-        });
-      } else {
-        // Для маленьких файлов отправляем данные в правильном формате
-        const fileBuffer = await fs.readFile(localPath);
-        
-        res.json({
-          success: true,
-          fileName: fileName,
-          fileSize: stats.size,
-          fileSizeMB: fileSizeMB.toFixed(2),
-          downloadUrl: downloadUrl,
-          expiresIn: '30 minutes',
-          fileData: fileBuffer.toString('base64'),
-          largeFile: false
-        });
-      }
+      // Отправляем ответ в формате, понятном Make.com
+      res.json({
+        fileName: fileName,
+        filePath: `videos/${fileName}`,
+        fileUrl: directUrl,
+        fileSize: stats.size,
+        fileSizeMB: fileSizeMB.toFixed(2),
+        success: true
+      });
       
       // Удаляем через 30 минут
       setTimeout(async () => {
         try {
           await fs.unlink(localPath);
-          console.log(`🗑️ Временный файл удален: ${tempFileName}`);
+          console.log(`🗑️ Временный файл удален: ${cleanFileName}`);
         } catch (e) {}
       }, 30 * 60 * 1000);
       
