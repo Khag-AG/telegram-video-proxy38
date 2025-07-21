@@ -124,6 +124,29 @@ async function getBotForChannel(chatId) {
   }
 }
 
+// Функция транслитерации
+function transliterate(str) {
+  const ru = {
+    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 
+    'е': 'e', 'ё': 'e', 'ж': 'zh', 'з': 'z', 'и': 'i', 
+    'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 
+    'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 
+    'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'ch', 
+    'ш': 'sh', 'щ': 'sch', 'ъ': '', 'ы': 'y', 'ь': '', 
+    'э': 'e', 'ю': 'yu', 'я': 'ya',
+    'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D',
+    'Е': 'E', 'Ё': 'E', 'Ж': 'Zh', 'З': 'Z', 'И': 'I',
+    'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M', 'Н': 'N',
+    'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T',
+    'У': 'U', 'Ф': 'F', 'Х': 'H', 'Ц': 'C', 'Ч': 'Ch',
+    'Ш': 'Sh', 'Щ': 'Sch', 'Ъ': '', 'Ы': 'Y', 'Ь': '',
+    'Э': 'E', 'Ю': 'Yu', 'Я': 'Ya',
+    ' ': '_'
+  };
+  
+  return str.split('').map(char => ru[char] || char).join('');
+}
+
 // Основной эндпоинт для Make.com
 app.post('/download-bot', async (req, res) => {
   const startTime = Date.now();
@@ -177,10 +200,11 @@ app.post('/download-bot', async (req, res) => {
         }
       });
       
-      // Генерируем имя файла
+      // Генерируем имя файла с транслитерацией
       const originalFileName = file_name || `file_${Date.now()}.mp4`;
+      const transliteratedFileName = transliterate(originalFileName);
       const uploadId = uuidv4();
-      const extension = path.extname(originalFileName) || '.mp4';
+      const extension = path.extname(transliteratedFileName) || '.mp4';
       const safeFileName = `${uploadId}${extension}`;
       const localPath = path.join(uploadDir, safeFileName);
       
@@ -207,9 +231,12 @@ app.post('/download-bot', async (req, res) => {
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
-      // Получаем первые 200 байт файла для превью в hex формате
-      const previewBytes = buffer.slice(0, 200);
+      // Получаем первые 64 байта файла для hex превью (как в HTTP модуле)
+      const previewBytes = buffer.slice(0, 64);
       const hexPreview = previewBytes.toString('hex');
+      
+      // Генерируем уникальный хеш для IMTBuffer (32 символа)
+      const hash = crypto.createHash('md5').update(buffer).digest('hex');
       
       // Определяем MIME тип
       let contentType = 'video/mp4';
@@ -218,20 +245,8 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
       
-      // Формируем ответ в формате Make.com
-      const makeResponse = {
-        // Основные данные
-        fileName: originalFileName,
-        safeFileName: safeFileName,
-        filePath: `videos/${originalFileName}`,
-        fileUrl: directUrl,
-        fileSize: stats.size,
-        fileSizeMB: fileSizeMB.toFixed(2),
-        botUsed: bot.name,
-        duration: duration,
-        success: true,
-        
-        // Дополнительные данные для Make.com
+      // Формируем ответ в формате Make.com (как HTTP модуль)
+      const makeResponse = [{
         statusCode: 200,
         headers: [
           {
@@ -273,14 +288,31 @@ app.post('/download-bot', async (req, res) => {
           {
             name: "x-powered-by",
             value: "Express"
+          },
+          {
+            name: "x-railway-edge",
+            value: "railway/us-east4-eqdc4a"
+          },
+          {
+            name: "x-railway-request-id",
+            value: uploadId
           }
         ],
         cookieHeaders: [],
-        // Бинарные данные в формате IMTBuffer с hex превью
-        data: `IMTBuffer(${stats.size}, binary, ${uploadId.replace(/-/g, '')}): ${hexPreview}`
-      };
+        data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
+        fileSize: stats.size,
+        fileName: transliteratedFileName,
+        // Дополнительные поля для обратной совместимости
+        fileUrl: directUrl,
+        safeFileName: safeFileName,
+        filePath: `videos/${transliteratedFileName}`,
+        fileSizeMB: fileSizeMB.toFixed(2),
+        botUsed: bot.name,
+        duration: duration,
+        success: true
+      }];
       
-      // Отправляем ответ БЕЗ полных бинарных данных
+      // Отправляем ответ
       res.json(makeResponse);
       
       // Удаляем через 30 минут
