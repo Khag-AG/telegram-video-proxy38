@@ -235,8 +235,8 @@ app.post('/download-bot', async (req, res) => {
       const previewBytes = buffer.slice(0, 128);
       const hexPreview = previewBytes.toString('hex');
       
-      // Генерируем уникальный хеш для IMTBuffer (32 символа)
-      const hash = crypto.createHash('md5').update(buffer).digest('hex');
+      // Генерируем уникальный хеш для IMTBuffer (40 символа)
+      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
       
       // Определяем MIME тип
       let contentType = 'video/mp4';
@@ -311,10 +311,6 @@ app.post('/download-bot', async (req, res) => {
         duration: duration,
         success: true
       };
-      
-      // Логируем ответ перед отправкой
-      console.log('📤 Отправляем ответ Make.com:');
-      console.log(JSON.stringify(makeResponse, null, 2));
       
       // Отправляем ответ
       res.json(makeResponse);
