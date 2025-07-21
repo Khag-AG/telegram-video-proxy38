@@ -6,7 +6,7 @@ const { pool, initDatabase } = require('./db');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.ADMIN_PORT || 3001;
+const PORT = 3001; // Фиксированный порт для админки
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-me';
 

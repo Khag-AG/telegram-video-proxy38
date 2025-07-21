@@ -1,2 +1,1 @@
-web: node bot-server.js
-worker: node admin-panel.js
+web: node start.js
