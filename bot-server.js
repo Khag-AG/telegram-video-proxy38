@@ -232,20 +232,19 @@ app.post('/download-bot', async (req, res) => {
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
       // Получаем ТОЧНО первые 128 байт файла для hex превью
-      const previewBuffer = Buffer.alloc(128); // Создаем буфер ровно 128 байт
-      buffer.copy(previewBuffer, 0, 0, 128); // Копируем первые 128 байт
-      const hexPreview = previewBuffer.toString('hex'); // Это даст ровно 256 символов
+      const previewBuffer = Buffer.alloc(180);
+      buffer.copy(previewBuffer, 0, 0, 180);
+      const hexPreview = previewBuffer.toString('hex'); // 360 символов
 
-      // Проверяем длину
-      console.log(`📊 Hex preview length: ${hexPreview.length} символов (должно быть 256)`);
+      const hash = crypto.createHash('sha1').update(buffer).digest('hex').slice(0, 20);
 
-      // Генерируем SHA-1 хеш для IMTBuffer
-      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
+      // Формируем data-поле
+      const dataField = `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`;
 
       // Логируем для проверки
       console.log(`📊 Hex preview length: ${hexPreview.length} (должно быть 256)`);
       console.log(`📊 Hex preview: ${hexPreview}`);
-      
+
       // Определяем MIME тип
       let contentType = 'video/mp4';
       if (extension === '.mp4') contentType = 'video/mp4';
