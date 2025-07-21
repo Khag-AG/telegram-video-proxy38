@@ -220,7 +220,7 @@ app.post('/download-bot', async (req, res) => {
       
       // Формируем ответ в формате Make.com
       const makeResponse = {
-        // Основные данные (как было)
+        // Основные данные
         fileName: originalFileName,
         safeFileName: safeFileName,
         filePath: `videos/${originalFileName}`,
@@ -277,14 +277,11 @@ app.post('/download-bot', async (req, res) => {
         ],
         cookieHeaders: [],
         // Бинарные данные в формате IMTBuffer с hex превью
-        data: `IMTBuffer(${stats.size}, binary, ${uploadId.replace(/-/g, '')}): ${hexPreview}`,
-        
-        // Полные бинарные данные в base64 (для Make.com)
-        fileData: buffer.toString('base64')
+        data: `IMTBuffer(${stats.size}, binary, ${uploadId.replace(/-/g, '')}): ${hexPreview}`
       };
       
-      // Отправляем ответ
-      res.json([makeResponse]);
+      // Отправляем ответ БЕЗ полных бинарных данных
+      res.json(makeResponse);
       
       // Удаляем через 30 минут
       setTimeout(async () => {
