@@ -207,8 +207,20 @@ app.post('/download-bot', async (req, res) => {
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
-      // Отправляем ответ в формате, понятном Make.com
-      res.json({
+      // Получаем первые 200 байт файла для превью в hex формате
+      const previewBytes = buffer.slice(0, 200);
+      const hexPreview = previewBytes.toString('hex');
+      
+      // Определяем MIME тип
+      let contentType = 'video/mp4';
+      if (extension === '.mp4') contentType = 'video/mp4';
+      else if (extension === '.mkv') contentType = 'video/x-matroska';
+      else if (extension === '.avi') contentType = 'video/x-msvideo';
+      else if (extension === '.mov') contentType = 'video/quicktime';
+      
+      // Формируем ответ в формате Make.com
+      const makeResponse = {
+        // Основные данные (как было)
         fileName: originalFileName,
         safeFileName: safeFileName,
         filePath: `videos/${originalFileName}`,
@@ -217,8 +229,62 @@ app.post('/download-bot', async (req, res) => {
         fileSizeMB: fileSizeMB.toFixed(2),
         botUsed: bot.name,
         duration: duration,
-        success: true
-      });
+        success: true,
+        
+        // Дополнительные данные для Make.com
+        statusCode: 200,
+        headers: [
+          {
+            name: "accept-ranges",
+            value: "bytes"
+          },
+          {
+            name: "access-control-allow-origin",
+            value: "*"
+          },
+          {
+            name: "cache-control",
+            value: "public, max-age=0"
+          },
+          {
+            name: "content-length",
+            value: stats.size.toString()
+          },
+          {
+            name: "content-type",
+            value: contentType
+          },
+          {
+            name: "date",
+            value: new Date().toUTCString()
+          },
+          {
+            name: "etag",
+            value: `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`
+          },
+          {
+            name: "last-modified",
+            value: new Date().toUTCString()
+          },
+          {
+            name: "server",
+            value: "railway-edge"
+          },
+          {
+            name: "x-powered-by",
+            value: "Express"
+          }
+        ],
+        cookieHeaders: [],
+        // Бинарные данные в формате IMTBuffer с hex превью
+        data: `IMTBuffer(${stats.size}, binary, ${uploadId.replace(/-/g, '')}): ${hexPreview}`,
+        
+        // Полные бинарные данные в base64 (для Make.com)
+        fileData: buffer.toString('base64')
+      };
+      
+      // Отправляем ответ
+      res.json([makeResponse]);
       
       // Удаляем через 30 минут
       setTimeout(async () => {
