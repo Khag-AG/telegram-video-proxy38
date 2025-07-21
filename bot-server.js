@@ -246,7 +246,7 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.mov') contentType = 'video/quicktime';
       
       // Формируем ответ в формате Make.com (как HTTP модуль)
-      const makeResponse = [{
+      const makeResponse = {
         statusCode: 200,
         headers: [
           {
@@ -310,7 +310,7 @@ app.post('/download-bot', async (req, res) => {
         botUsed: bot.name,
         duration: duration,
         success: true
-      }];
+      };
       
       // Логируем ответ перед отправкой
       console.log('📤 Отправляем ответ Make.com:');
