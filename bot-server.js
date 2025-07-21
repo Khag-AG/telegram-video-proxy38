@@ -231,14 +231,17 @@ app.post('/download-bot', async (req, res) => {
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
-      // Получаем первые 128 байт файла для hex превью (как в HTTP модуле)
+      // Получаем ТОЧНО первые 128 байт файла для hex превью
       const previewBytes = buffer.slice(0, 128);
-      let hexPreview = previewBytes.toString('hex');
+      // Конвертируем в hex и берем ТОЧНО 256 символов
+      const hexPreview = previewBytes.toString('hex').substring(0, 256);
 
-      // Убеждаемся, что hex строка имеет правильную длину (256 символов = 128 байт * 2)
-      if (hexPreview.length > 256) {
-        hexPreview = hexPreview.substring(0, 256);
-      }
+      // Генерируем SHA-1 хеш для IMTBuffer
+      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
+
+      // Логируем для проверки
+      console.log(`📊 Hex preview length: ${hexPreview.length} (должно быть 256)`);
+      console.log(`📊 Hex preview: ${hexPreview}`);
       
       // Генерируем уникальный хеш для IMTBuffer (40 символа)
       const hash = crypto.createHash('sha1').update(buffer).digest('hex');
@@ -317,6 +320,13 @@ app.post('/download-bot', async (req, res) => {
         success: true
       };
       
+      // Проверяем длину hex preview
+      if (hexPreview.length !== 256) {
+        console.error(`❌ ОШИБКА: Hex preview неправильной длины: ${hexPreview.length} вместо 256`);
+        // Принудительно обрезаем до 256 символов
+        hexPreview = hexPreview.substring(0, 256);
+      }
+
       // Отправляем ответ
       res.json(makeResponse);
       
