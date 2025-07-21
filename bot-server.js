@@ -230,14 +230,6 @@ app.post('/download-bot', async (req, res) => {
       console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
-      
-      // Получаем ТОЧНО первые 100 байт файла для hex превью (как HTTP модуль)
-      const previewBuffer = Buffer.alloc(100); // 100 байт, НЕ 128!
-      buffer.copy(previewBuffer, 0, 0, 100);
-      const hexPreview = previewBuffer.toString('hex'); // 200 символов
-
-      // SHA-1 хеш полный (40 символов)
-      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
 
       // Формируем data-поле
       const dataField = `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`;
@@ -254,6 +246,17 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
       
+      // Читаем ВЕСЬ файл для Make.com
+      const fileBuffer = await fs.readFile(localPath);
+
+      // Генерируем SHA-1 хеш полного файла
+      const hash = crypto.createHash('sha1').update(fileBuffer).digest('hex');
+
+      // Получаем первые 100 байт для hex превью
+      const previewBuffer = Buffer.alloc(100);
+      fileBuffer.copy(previewBuffer, 0, 0, 100);
+      const hexPreview = previewBuffer.toString('hex');
+
       // Формируем ответ в формате Make.com (как HTTP модуль)
       const makeResponse = {
         statusCode: 200,
@@ -308,10 +311,13 @@ app.post('/download-bot', async (req, res) => {
           }
         ],
         cookieHeaders: [],
-        data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
+        // ВАЖНО: Передаем ВЕСЬ файл как base64
+        data: fileBuffer.toString('base64'),
+        // Также передаем IMTBuffer представление для совместимости
+        dataIMT: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
         fileSize: stats.size,
         fileName: transliteratedFileName,
-        // Дополнительные поля для обратной совместимости
+        // Дополнительные поля
         fileUrl: directUrl,
         safeFileName: safeFileName,
         filePath: `videos/${transliteratedFileName}`,
@@ -320,6 +326,9 @@ app.post('/download-bot', async (req, res) => {
         duration: duration,
         success: true
       };
+
+      // Отправляем ответ
+      res.json(makeResponse);
       
       // Проверяем длину hex preview
       if (hexPreview.length !== 200) {
