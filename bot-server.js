@@ -231,19 +231,19 @@ app.post('/download-bot', async (req, res) => {
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
-      // Получаем ТОЧНО первые 128 байт файла для hex превью
-      const previewBuffer = Buffer.alloc(128); // 128 байт, НЕ 180!
-      buffer.copy(previewBuffer, 0, 0, 128);
-      const hexPreview = previewBuffer.toString('hex'); // 256 символов
+      // Получаем ТОЧНО первые 100 байт файла для hex превью (как HTTP модуль)
+      const previewBuffer = Buffer.alloc(100); // 100 байт, НЕ 128!
+      buffer.copy(previewBuffer, 0, 0, 100);
+      const hexPreview = previewBuffer.toString('hex'); // 200 символов
 
-      // SHA-1 хеш БЕЗ обрезания!
-      const hash = crypto.createHash('sha1').update(buffer).digest('hex'); // 40 символов
+      // SHA-1 хеш полный (40 символов)
+      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
 
       // Формируем data-поле
       const dataField = `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`;
 
       // Логируем для проверки
-      console.log(`📊 Hex preview length: ${hexPreview.length} (должно быть 256)`);
+      console.log(`📊 Hex preview length: ${hexPreview.length} (должно быть 200)`);
       console.log(`📊 Hash length: ${hash.length} (должно быть 40)`);
       console.log(`📊 Full data field: ${dataField}`);
 
