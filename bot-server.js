@@ -231,8 +231,8 @@ app.post('/download-bot', async (req, res) => {
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
-      // Получаем первые 64 байта файла для hex превью (как в HTTP модуле)
-      const previewBytes = buffer.slice(0, 64);
+      // Получаем первые 128 байт файла для hex превью (как в HTTP модуле)
+      const previewBytes = buffer.slice(0, 128);
       const hexPreview = previewBytes.toString('hex');
       
       // Генерируем уникальный хеш для IMTBuffer (32 символа)
