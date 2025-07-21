@@ -233,7 +233,12 @@ app.post('/download-bot', async (req, res) => {
       
       // Получаем первые 128 байт файла для hex превью (как в HTTP модуле)
       const previewBytes = buffer.slice(0, 128);
-      const hexPreview = previewBytes.toString('hex');
+      let hexPreview = previewBytes.toString('hex');
+
+      // Убеждаемся, что hex строка имеет правильную длину (256 символов = 128 байт * 2)
+      if (hexPreview.length > 256) {
+        hexPreview = hexPreview.substring(0, 256);
+      }
       
       // Генерируем уникальный хеш для IMTBuffer (40 символа)
       const hash = crypto.createHash('sha1').update(buffer).digest('hex');
