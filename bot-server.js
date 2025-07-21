@@ -322,10 +322,10 @@ app.post('/download-bot', async (req, res) => {
       };
       
       // Проверяем длину hex preview
-      if (hexPreview.length !== 256) {
-        console.error(`❌ ОШИБКА: Hex preview неправильной длины: ${hexPreview.length} вместо 256`);
-        // Принудительно обрезаем до 256 символов
-        hexPreview = hexPreview.substring(0, 256);
+      if (hexPreview.length !== 200) {
+        console.error(`❌ ОШИБКА: Hex preview неправильной длины: ${hexPreview.length} вместо 200`);
+        // Принудительно обрезаем до 200 символов
+        hexPreview = hexPreview.substring(0, 200);
       }
 
       // Отправляем ответ
