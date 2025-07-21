@@ -312,6 +312,10 @@ app.post('/download-bot', async (req, res) => {
         success: true
       }];
       
+      // Логируем ответ перед отправкой
+      console.log('📤 Отправляем ответ Make.com:');
+      console.log(JSON.stringify(makeResponse, null, 2));
+      
       // Отправляем ответ
       res.json(makeResponse);
       
@@ -333,18 +337,18 @@ app.post('/download-bot', async (req, res) => {
         [chat_id, bot.id, file_name, 'error', error.message]
       );
       
-      return res.status(500).json({ 
+      return res.status(500).json([{ 
         error: 'Не удалось скачать файл через MTProto',
         details: error.message 
-      });
+      }]);
     }
     
   } catch (error) {
     console.error('❌ Общая ошибка:', error);
-    res.status(500).json({ 
+    res.status(500).json([{ 
       error: 'Внутренняя ошибка сервера',
       details: error.message 
-    });
+    }]);
   }
 });
 
