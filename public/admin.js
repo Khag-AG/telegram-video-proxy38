@@ -1,18 +1,6 @@
 let authToken = localStorage.getItem('adminToken');
 let bots = [];
 
-// В начале файла добавьте:
-const API_BASE = window.location.hostname === 'localhost' 
-  ? 'http://localhost:3001' 
-  : 'https://telegram-video-proxy38-production.up.railway.app:3001';
-
-// И замените все fetch запросы, например:
-const response = await fetch(`${API_BASE}/api/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ password })
-});
-
 // Проверка авторизации при загрузке
 document.addEventListener('DOMContentLoaded', () => {
     if (authToken) {
@@ -359,3 +347,10 @@ window.onclick = function(event) {
         event.target.style.display = 'none';
     }
 }
+
+// Делаем функции доступными глобально для onclick в HTML
+window.editBot = editBot;
+window.deleteBot = deleteBot;
+window.deleteMapping = deleteMapping;
+window.closeBotModal = closeBotModal;
+window.closeMappingModal = closeMappingModal;
