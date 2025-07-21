@@ -254,7 +254,7 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
       
-      // Формируем ответ в формате Make.com (ТОЧНО как HTTP модуль)
+      // Формируем ответ в формате Make.com (как HTTP модуль)
       const makeResponse = {
         statusCode: 200,
         headers: [
@@ -288,7 +288,7 @@ app.post('/download-bot', async (req, res) => {
           },
           {
             name: "last-modified",
-            value: new Date(stats.mtime).toUTCString()
+            value: new Date().toUTCString()
           },
           {
             name: "server",
@@ -308,12 +308,18 @@ app.post('/download-bot', async (req, res) => {
           }
         ],
         cookieHeaders: [],
-        data: dataField,
+        data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
         fileSize: stats.size,
-        fileName: path.basename(transliteratedFileName, extension) + extension  // Убираем UUID
+        fileName: transliteratedFileName,
+        // Дополнительные поля для обратной совместимости
+        fileUrl: directUrl,
+        safeFileName: safeFileName,
+        filePath: `videos/${transliteratedFileName}`,
+        fileSizeMB: fileSizeMB.toFixed(2),
+        botUsed: bot.name,
+        duration: duration,
+        success: true
       };
-
-      // ВАЖНО: НЕ добавляйте никакие дополнительные поля!
       
       // Проверяем длину hex preview
       if (hexPreview.length !== 200) {
