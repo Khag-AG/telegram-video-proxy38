@@ -231,7 +231,7 @@ app.post('/download-bot', async (req, res) => {
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
-      // ВАЖНО: Сначала вычисляем hash из buffer (не из файла!)
+      // ВАЖНО: Сначала вычисляем hash из buffer
       const hash = crypto.createHash('sha1').update(buffer).digest('hex');
       
       // Получаем первые 100 байт для hex превью
@@ -315,17 +315,7 @@ app.post('/download-bot', async (req, res) => {
         duration: duration,
         success: true
       };
-
-      // Отправляем ответ
-      res.json(makeResponse);
       
-      // Проверяем длину hex preview
-      if (hexPreview.length !== 200) {
-        console.error(`❌ ОШИБКА: Hex preview неправильной длины: ${hexPreview.length} вместо 200`);
-        // Принудительно обрезаем до 200 символов
-        hexPreview = hexPreview.substring(0, 200);
-      }
-
       // Отправляем ответ
       res.json(makeResponse);
       
