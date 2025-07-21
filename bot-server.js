@@ -230,14 +230,14 @@ app.post('/download-bot', async (req, res) => {
       console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
       console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
-
-      // Формируем data-поле
-      const dataField = `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`;
-
-      // Логируем для проверки
-      console.log(`📊 Hex preview length: ${hexPreview.length} (должно быть 200)`);
-      console.log(`📊 Hash length: ${hash.length} (должно быть 40)`);
-      console.log(`📊 Full data field: ${dataField}`);
+      
+      // ВАЖНО: Сначала вычисляем hash из buffer (не из файла!)
+      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
+      
+      // Получаем первые 100 байт для hex превью
+      const previewBuffer = Buffer.alloc(100);
+      buffer.copy(previewBuffer, 0, 0, 100);
+      const hexPreview = previewBuffer.toString('hex');
 
       // Определяем MIME тип
       let contentType = 'video/mp4';
@@ -246,18 +246,7 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
       
-      // Читаем ВЕСЬ файл для Make.com
-      const fileBuffer = await fs.readFile(localPath);
-
-      // Генерируем SHA-1 хеш полного файла
-      const hash = crypto.createHash('sha1').update(fileBuffer).digest('hex');
-
-      // Получаем первые 100 байт для hex превью
-      const previewBuffer = Buffer.alloc(100);
-      fileBuffer.copy(previewBuffer, 0, 0, 100);
-      const hexPreview = previewBuffer.toString('hex');
-
-      // Формируем ответ в формате Make.com (как HTTP модуль)
+      // Формируем ответ в формате Make.com
       const makeResponse = {
         statusCode: 200,
         headers: [
@@ -311,9 +300,9 @@ app.post('/download-bot', async (req, res) => {
           }
         ],
         cookieHeaders: [],
-        // ВАЖНО: Передаем ВЕСЬ файл как base64
-        data: fileBuffer.toString('base64'),
-        // Также передаем IMTBuffer представление для совместимости
+        // Передаем ВЕСЬ файл как base64 для YouTube
+        data: buffer.toString('base64'),
+        // Также сохраняем IMTBuffer формат для совместимости
         dataIMT: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
         fileSize: stats.size,
         fileName: transliteratedFileName,
