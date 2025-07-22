@@ -228,7 +228,10 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
       
-      // Создаем JSON ответ для всех запросов
+      // Конвертируем buffer в base64 для Make.com
+      const base64Data = buffer.toString('base64');
+      
+      // Создаем полный JSON ответ с бинарными данными
       const response = {
         success: true,
         file: {
@@ -238,7 +241,14 @@ app.post('/download-bot', async (req, res) => {
           sizeMB: fileSizeMB.toFixed(2),
           mimeType: contentType,
           uploadId: uploadId,
-          localPath: `/uploads/${safeFileName}`
+          localPath: `/uploads/${safeFileName}`,
+          // Добавляем бинарные данные в формате base64
+          data: base64Data,
+          // Добавляем информацию для Make.com Buffer
+          buffer: {
+            size: stats.size,
+            encoding: 'base64'
+          }
         },
         bot: {
           name: bot.name,
@@ -249,14 +259,11 @@ app.post('/download-bot', async (req, res) => {
           timestamp: new Date().toISOString()
         }
       };
-
-      // Проверяем User-Agent для логирования
-      const userAgent = req.headers['user-agent'] || '';
-      const isMakeRequest = userAgent.includes('Make/') || userAgent.includes('Integromat/');
-      console.log(`📋 Тип запроса: ${isMakeRequest ? 'Make.com' : 'Обычный'}`);
-      console.log(`🔗 Прямая ссылка: ${directUrl}`);
-
-      // Всегда отправляем JSON ответ
+      
+      console.log(`📤 Отправляем JSON с бинарными данными`);
+      console.log(`📊 Размер base64: ${(base64Data.length / 1024 / 1024).toFixed(2)} MB`);
+      
+      // Отправляем JSON ответ
       res.status(200).json(response);
       
       // Логируем успешную загрузку
@@ -268,7 +275,8 @@ app.post('/download-bot', async (req, res) => {
       
       const duration = Date.now() - startTime;
       console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
-      console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
+      console.log(`🔗 Прямая ссылка: ${directUrl}`);
+      console.log(`📊 Размер файла: ${fileSizeMB.toFixed(2)} MB`);
       
       // Удаляем через 30 минут
       setTimeout(async () => {
