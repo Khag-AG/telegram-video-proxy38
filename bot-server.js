@@ -398,14 +398,16 @@ app.post('/download-bot', async (req, res) => {
       const acceptHeader = req.headers['accept'] || '';
       const isMakeRequest = userAgent.includes('Make/') || userAgent.includes('Integromat/');
       const wantsBinary = req.query.binary === 'true' || req.query.download === 'true';
-      
+
+      console.log(`📋 Метод: ${req.method}`);
       console.log(`📋 Тип запроса: ${isMakeRequest ? 'Make.com' : 'Обычный'}`);
       console.log(`📋 Accept: ${acceptHeader}`);
       console.log(`📋 Binary mode: ${wantsBinary}`);
-      
-      // Если запрос от Make.com "Get a file" или явно запрошен бинарный режим
-      if (wantsBinary || (isMakeRequest && !acceptHeader.includes('application/json'))) {
-        console.log(`📤 Отправляем бинарный файл`);
+
+      // POST запросы ВСЕГДА получают JSON
+      // GET запросы с download=true получают бинарные данные
+      if (req.method === 'GET' && wantsBinary) {
+        console.log(`📤 Отправляем бинарный файл (GET с download=true)`);
         
         // Устанавливаем заголовки для бинарного файла
         res.set({
@@ -429,7 +431,7 @@ app.post('/download-bot', async (req, res) => {
         });
         
       } else {
-        // Для обычных запросов и запросов с Accept: application/json
+        // Все остальные запросы получают JSON
         console.log(`📤 Отправляем JSON с информацией о файле`);
         
         // Создаем ссылку для бинарного скачивания
@@ -439,7 +441,7 @@ app.post('/download-bot', async (req, res) => {
           success: true,
           file: {
             url: directUrl,
-            binaryUrl: binaryUrl, // Специальная ссылка для Make.com "Get a file"
+            binaryUrl: binaryUrl,
             name: transliteratedFileName,
             originalName: originalFileName,
             size: stats.size,
