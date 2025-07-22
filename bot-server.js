@@ -7,6 +7,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const { pool, initDatabase } = require('./db');
+const https = require('https'); // Добавляем для скачивания файла обратно
 require('dotenv').config();
 
 const app = express();
@@ -219,105 +220,201 @@ app.post('/download-bot', async (req, res) => {
       const publicDomain = process.env.PUBLIC_DOMAIN || 'telegram-video-proxy38-production.up.railway.app';
       const directUrl = `https://${publicDomain}/uploads/${safeFileName}`;
       
-      // Логируем успешную загрузку
-      await pool.query(
-        `INSERT INTO download_logs (chat_id, bot_id, file_name, file_size, status) 
-         VALUES ($1, $2, $3, $4, $5)`,
-        [chat_id, bot.id, originalFileName, stats.size, 'success']
-      );
+      console.log(`🔄 Скачиваем файл обратно для правильного формата...`);
       
-      const duration = Date.now() - startTime;
-      console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
-      console.log(`🔗 Прямая ссылка: ${directUrl}`);
-      console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
+      // Небольшая задержка, чтобы файл точно был доступен
+      await new Promise(resolve => setTimeout(resolve, 500));
       
-      // ВАЖНО: Сначала вычисляем hash из buffer
-      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
-      
-      // Получаем первые 100 байт для hex превью
-      const previewBuffer = Buffer.alloc(100);
-      buffer.copy(previewBuffer, 0, 0, 100);
-      const hexPreview = previewBuffer.toString('hex');
-
-      // Определяем MIME тип
-      let contentType = 'video/mp4';
-      if (extension === '.mp4') contentType = 'video/mp4';
-      else if (extension === '.mkv') contentType = 'video/x-matroska';
-      else if (extension === '.avi') contentType = 'video/x-msvideo';
-      else if (extension === '.mov') contentType = 'video/quicktime';
-      
-      // Формируем ответ в формате Make.com
-      const makeResponse = {
-        statusCode: 200,
-        headers: [
-          {
-            name: "accept-ranges",
-            value: "bytes"
-          },
-          {
-            name: "access-control-allow-origin",
-            value: "*"
-          },
-          {
-            name: "cache-control",
-            value: "public, max-age=0"
-          },
-          {
-            name: "content-length",
-            value: stats.size.toString()
-          },
-          {
-            name: "content-type",
-            value: contentType
-          },
-          {
-            name: "date",
-            value: new Date().toUTCString()
-          },
-          {
-            name: "etag",
-            value: `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`
-          },
-          {
-            name: "last-modified",
-            value: new Date().toUTCString()
-          },
-          {
-            name: "server",
-            value: "railway-edge"
-          },
-          {
-            name: "x-powered-by",
-            value: "Express"
-          },
-          {
-            name: "x-railway-edge",
-            value: "railway/us-east4-eqdc4a"
-          },
-          {
-            name: "x-railway-request-id",
-            value: uploadId
-          }
-        ],
-        cookieHeaders: [],
-        // Передаем ВЕСЬ файл как base64 для YouTube
-        data: buffer.toString('base64'),
-        // Также сохраняем IMTBuffer формат для совместимости
-        dataIMT: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
-        fileSize: stats.size,
-        fileName: transliteratedFileName,
-        // Дополнительные поля
-        fileUrl: directUrl,
-        safeFileName: safeFileName,
-        filePath: `videos/${transliteratedFileName}`,
-        fileSizeMB: fileSizeMB.toFixed(2),
-        botUsed: bot.name,
-        duration: duration,
-        success: true
-      };
-      
-      // Отправляем ответ
-      res.json(makeResponse);
+      try {
+        // Скачиваем файл обратно через HTTPS для получения правильного формата
+        const fileData = await new Promise((resolve, reject) => {
+          const chunks = [];
+          
+          https.get(directUrl, (response) => {
+            if (response.statusCode !== 200) {
+              reject(new Error(`HTTP ${response.statusCode}`));
+              return;
+            }
+            
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => {
+              const httpBuffer = Buffer.concat(chunks);
+              console.log(`✅ Файл получен обратно: ${httpBuffer.length} байт`);
+              resolve(httpBuffer);
+            });
+            response.on('error', reject);
+          }).on('error', reject);
+        });
+        
+        // Вычисляем hash и hex preview из полученного буфера
+        const hash = crypto.createHash('sha1').update(fileData).digest('hex');
+        
+        // Получаем первые 100 байт для hex превью
+        const previewBuffer = Buffer.alloc(100);
+        fileData.copy(previewBuffer, 0, 0, Math.min(100, fileData.length));
+        const hexPreview = previewBuffer.toString('hex');
+        
+        // Определяем MIME тип
+        let contentType = 'video/mp4';
+        if (extension === '.mp4') contentType = 'video/mp4';
+        else if (extension === '.mkv') contentType = 'video/x-matroska';
+        else if (extension === '.avi') contentType = 'video/x-msvideo';
+        else if (extension === '.mov') contentType = 'video/quicktime';
+        
+        // Формируем ответ в формате Make.com (как у HTTP модуля)
+        const makeResponse = {
+          statusCode: 200,
+          headers: [
+            {
+              name: "accept-ranges",
+              value: "bytes"
+            },
+            {
+              name: "access-control-allow-origin",
+              value: "*"
+            },
+            {
+              name: "cache-control",
+              value: "public, max-age=0"
+            },
+            {
+              name: "content-length",
+              value: stats.size.toString()
+            },
+            {
+              name: "content-type",
+              value: contentType
+            },
+            {
+              name: "date",
+              value: new Date().toUTCString()
+            },
+            {
+              name: "etag",
+              value: `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`
+            },
+            {
+              name: "last-modified",
+              value: new Date().toUTCString()
+            },
+            {
+              name: "server",
+              value: "railway-edge"
+            },
+            {
+              name: "x-powered-by",
+              value: "Express"
+            },
+            {
+              name: "x-railway-edge",
+              value: "railway/us-east4-eqdc4a"
+            },
+            {
+              name: "x-railway-request-id",
+              value: uploadId
+            }
+          ],
+          cookieHeaders: [],
+          // Формат данных точно как у HTTP модуля для WordPress
+          data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
+          fileSize: stats.size,
+          fileName: transliteratedFileName,
+          // Дополнительные поля
+          fileUrl: directUrl,
+          safeFileName: safeFileName,
+          filePath: `videos/${transliteratedFileName}`,
+          fileSizeMB: fileSizeMB.toFixed(2),
+          botUsed: bot.name,
+          duration: Date.now() - startTime,
+          success: true
+        };
+        
+        // Логируем успешную загрузку
+        await pool.query(
+          `INSERT INTO download_logs (chat_id, bot_id, file_name, file_size, status) 
+           VALUES ($1, $2, $3, $4, $5)`,
+          [chat_id, bot.id, originalFileName, stats.size, 'success']
+        );
+        
+        const duration = Date.now() - startTime;
+        console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
+        console.log(`🔗 Прямая ссылка: ${directUrl}`);
+        console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
+        
+        // Отправляем ответ
+        res.json(makeResponse);
+        
+      } catch (httpError) {
+        console.error('❌ Ошибка при получении файла обратно:', httpError);
+        
+        // Если не удалось получить файл обратно, возвращаем исходный формат
+        const hash = crypto.createHash('sha1').update(buffer).digest('hex');
+        const previewBuffer = Buffer.alloc(100);
+        buffer.copy(previewBuffer, 0, 0, 100);
+        const hexPreview = previewBuffer.toString('hex');
+        
+        const makeResponse = {
+          statusCode: 200,
+          headers: [
+            {
+              name: "accept-ranges",
+              value: "bytes"
+            },
+            {
+              name: "access-control-allow-origin",
+              value: "*"
+            },
+            {
+              name: "cache-control",
+              value: "public, max-age=0"
+            },
+            {
+              name: "content-length",
+              value: stats.size.toString()
+            },
+            {
+              name: "content-type",
+              value: contentType
+            },
+            {
+              name: "date",
+              value: new Date().toUTCString()
+            },
+            {
+              name: "etag",
+              value: `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`
+            },
+            {
+              name: "last-modified",
+              value: new Date().toUTCString()
+            },
+            {
+              name: "server",
+              value: "railway-edge"
+            },
+            {
+              name: "x-powered-by",
+              value: "Express"
+            },
+            {
+              name: "x-railway-edge",
+              value: "railway/us-east4-eqdc4a"
+            },
+            {
+              name: "x-railway-request-id",
+              value: uploadId
+            }
+          ],
+          cookieHeaders: [],
+          data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
+          fileSize: stats.size,
+          fileName: transliteratedFileName,
+          fileUrl: directUrl,
+          error: "Файл доступен по прямой ссылке"
+        };
+        
+        res.json(makeResponse);
+      }
       
       // Удаляем через 30 минут
       setTimeout(async () => {
