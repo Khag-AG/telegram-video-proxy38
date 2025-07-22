@@ -228,110 +228,36 @@ app.post('/download-bot', async (req, res) => {
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
       
-      // Вычисляем hash для IMTBuffer
-      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
-      
-      // Проверяем User-Agent для определения запроса от Make.com
+      // Создаем JSON ответ для всех запросов
+      const response = {
+        success: true,
+        file: {
+          url: directUrl,
+          name: transliteratedFileName,
+          size: stats.size,
+          sizeMB: fileSizeMB.toFixed(2),
+          mimeType: contentType,
+          uploadId: uploadId,
+          localPath: `/uploads/${safeFileName}`
+        },
+        bot: {
+          name: bot.name,
+          id: bot.id
+        },
+        processing: {
+          duration: Date.now() - startTime,
+          timestamp: new Date().toISOString()
+        }
+      };
+
+      // Проверяем User-Agent для логирования
       const userAgent = req.headers['user-agent'] || '';
       const isMakeRequest = userAgent.includes('Make/') || userAgent.includes('Integromat/');
-      
       console.log(`📋 Тип запроса: ${isMakeRequest ? 'Make.com' : 'Обычный'}`);
-      
-      if (isMakeRequest) {
-        // Для Make.com возвращаем в специальном формате
-        // Формируем IMTBuffer строку без hex preview
-        const imtBufferString = `IMTBuffer(${stats.size}, binary, ${hash})`;
-        
-        // Устанавливаем заголовки как у обычного файлового сервера
-        res.set({
-          'Content-Type': contentType,
-          'Content-Length': stats.size.toString(),
-          'Accept-Ranges': 'bytes',
-          'Cache-Control': 'public, max-age=0',
-          'Last-Modified': new Date().toUTCString(),
-          'ETag': `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`,
-          'Access-Control-Allow-Origin': '*',
-          'X-Powered-By': 'Express',
-          'Server': 'railway-edge'
-        });
-        
-        // Отправляем файл как поток с метаданными
-        res.status(200);
-        
-        // Для Make.com нужно отправить специальный формат ответа
-        // который будет интерпретирован как IMTBuffer
-        const fileStream = require('fs').createReadStream(localPath);
-        fileStream.pipe(res);
-        
-      } else {
-        // Для обычных запросов возвращаем JSON с полной информацией
-        const makeResponse = {
-          statusCode: 200,
-          headers: [
-            {
-              name: "accept-ranges",
-              value: "bytes"
-            },
-            {
-              name: "access-control-allow-origin",
-              value: "*"
-            },
-            {
-              name: "cache-control",
-              value: "public, max-age=0"
-            },
-            {
-              name: "content-length",
-              value: stats.size.toString()
-            },
-            {
-              name: "content-type",
-              value: contentType
-            },
-            {
-              name: "date",
-              value: new Date().toUTCString()
-            },
-            {
-              name: "etag",
-              value: `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`
-            },
-            {
-              name: "last-modified",
-              value: new Date().toUTCString()
-            },
-            {
-              name: "server",
-              value: "railway-edge"
-            },
-            {
-              name: "x-powered-by",
-              value: "Express"
-            },
-            {
-              name: "x-railway-edge",
-              value: "railway/us-east4-eqdc4a"
-            },
-            {
-              name: "x-railway-request-id",
-              value: uploadId
-            }
-          ],
-          cookieHeaders: [],
-          data: `IMTBuffer(${stats.size}, binary, ${hash})`,
-          fileSize: stats.size,
-          fileName: transliteratedFileName,
-          fileUrl: directUrl,
-          safeFileName: safeFileName,
-          filePath: `videos/${transliteratedFileName}`,
-          fileSizeMB: fileSizeMB.toFixed(2),
-          botUsed: bot.name,
-          duration: Date.now() - startTime,
-          success: true
-        };
-        
-        res.json(makeResponse);
-      }
+      console.log(`🔗 Прямая ссылка: ${directUrl}`);
+
+      // Всегда отправляем JSON ответ
+      res.status(200).json(response);
       
       // Логируем успешную загрузку
       await pool.query(
@@ -342,7 +268,6 @@ app.post('/download-bot', async (req, res) => {
       
       const duration = Date.now() - startTime;
       console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
-      console.log(`🔗 Прямая ссылка: ${directUrl}`);
       console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
       // Удаляем через 30 минут
@@ -363,18 +288,18 @@ app.post('/download-bot', async (req, res) => {
         [chat_id, bot.id, file_name, 'error', error.message]
       );
       
-      return res.status(500).json([{ 
+      return res.status(500).json({ 
         error: 'Не удалось скачать файл через MTProto',
         details: error.message 
-      }]);
+      });
     }
     
   } catch (error) {
     console.error('❌ Общая ошибка:', error);
-    res.status(500).json([{ 
+    res.status(500).json({ 
       error: 'Внутренняя ошибка сервера',
       details: error.message 
-    }]);
+    });
   }
 });
 
