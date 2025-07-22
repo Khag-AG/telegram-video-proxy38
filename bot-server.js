@@ -160,6 +160,7 @@ app.post('/download-bot', async (req, res) => {
     console.log(`   Файл: ${file_name} (${file_id})`);
     console.log(`   Канал: ${chat_id}`);
     console.log(`   Сообщение: ${message_id}`);
+    console.log(`   User-Agent: ${req.headers['user-agent']}`);
     
     if (!file_id || !message_id || !chat_id) {
       return res.status(400).json({ 
@@ -220,48 +221,50 @@ app.post('/download-bot', async (req, res) => {
       const publicDomain = process.env.PUBLIC_DOMAIN || 'telegram-video-proxy38-production.up.railway.app';
       const directUrl = `https://${publicDomain}/uploads/${safeFileName}`;
       
-      console.log(`🔄 Скачиваем файл обратно для правильного формата...`);
+      // Определяем MIME тип
+      let contentType = 'video/mp4';
+      if (extension === '.mp4') contentType = 'video/mp4';
+      else if (extension === '.mkv') contentType = 'video/x-matroska';
+      else if (extension === '.avi') contentType = 'video/x-msvideo';
+      else if (extension === '.mov') contentType = 'video/quicktime';
       
-      // Небольшая задержка, чтобы файл точно был доступен
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Вычисляем hash для IMTBuffer
+      const hash = crypto.createHash('sha1').update(buffer).digest('hex');
       
-      try {
-        // Скачиваем файл обратно через HTTPS для получения правильного формата
-        const fileData = await new Promise((resolve, reject) => {
-          const chunks = [];
-          
-          https.get(directUrl, (response) => {
-            if (response.statusCode !== 200) {
-              reject(new Error(`HTTP ${response.statusCode}`));
-              return;
-            }
-            
-            response.on('data', (chunk) => chunks.push(chunk));
-            response.on('end', () => {
-              const httpBuffer = Buffer.concat(chunks);
-              console.log(`✅ Файл получен обратно: ${httpBuffer.length} байт`);
-              resolve(httpBuffer);
-            });
-            response.on('error', reject);
-          }).on('error', reject);
+      // Проверяем User-Agent для определения запроса от Make.com
+      const userAgent = req.headers['user-agent'] || '';
+      const isMakeRequest = userAgent.includes('Make/') || userAgent.includes('Integromat/');
+      
+      console.log(`📋 Тип запроса: ${isMakeRequest ? 'Make.com' : 'Обычный'}`);
+      
+      if (isMakeRequest) {
+        // Для Make.com возвращаем в специальном формате
+        // Формируем IMTBuffer строку без hex preview
+        const imtBufferString = `IMTBuffer(${stats.size}, binary, ${hash})`;
+        
+        // Устанавливаем заголовки как у обычного файлового сервера
+        res.set({
+          'Content-Type': contentType,
+          'Content-Length': stats.size.toString(),
+          'Accept-Ranges': 'bytes',
+          'Cache-Control': 'public, max-age=0',
+          'Last-Modified': new Date().toUTCString(),
+          'ETag': `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`,
+          'Access-Control-Allow-Origin': '*',
+          'X-Powered-By': 'Express',
+          'Server': 'railway-edge'
         });
         
-        // Вычисляем hash и hex preview из полученного буфера
-        const hash = crypto.createHash('sha1').update(fileData).digest('hex');
+        // Отправляем файл как поток с метаданными
+        res.status(200);
         
-        // Получаем первые 100 байт для hex превью
-        const previewBuffer = Buffer.alloc(100);
-        fileData.copy(previewBuffer, 0, 0, Math.min(100, fileData.length));
-        const hexPreview = previewBuffer.toString('hex');
+        // Для Make.com нужно отправить специальный формат ответа
+        // который будет интерпретирован как IMTBuffer
+        const fileStream = require('fs').createReadStream(localPath);
+        fileStream.pipe(res);
         
-        // Определяем MIME тип
-        let contentType = 'video/mp4';
-        if (extension === '.mp4') contentType = 'video/mp4';
-        else if (extension === '.mkv') contentType = 'video/x-matroska';
-        else if (extension === '.avi') contentType = 'video/x-msvideo';
-        else if (extension === '.mov') contentType = 'video/quicktime';
-        
-        // Формируем ответ в формате Make.com (как у HTTP модуля)
+      } else {
+        // Для обычных запросов возвращаем JSON с полной информацией
         const makeResponse = {
           statusCode: 200,
           headers: [
@@ -315,11 +318,9 @@ app.post('/download-bot', async (req, res) => {
             }
           ],
           cookieHeaders: [],
-          // Формат данных точно как у HTTP модуля для WordPress
-          data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
+          data: `IMTBuffer(${stats.size}, binary, ${hash})`,
           fileSize: stats.size,
           fileName: transliteratedFileName,
-          // Дополнительные поля
           fileUrl: directUrl,
           safeFileName: safeFileName,
           filePath: `videos/${transliteratedFileName}`,
@@ -329,92 +330,20 @@ app.post('/download-bot', async (req, res) => {
           success: true
         };
         
-        // Логируем успешную загрузку
-        await pool.query(
-          `INSERT INTO download_logs (chat_id, bot_id, file_name, file_size, status) 
-           VALUES ($1, $2, $3, $4, $5)`,
-          [chat_id, bot.id, originalFileName, stats.size, 'success']
-        );
-        
-        const duration = Date.now() - startTime;
-        console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
-        console.log(`🔗 Прямая ссылка: ${directUrl}`);
-        console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
-        
-        // Отправляем ответ
-        res.json(makeResponse);
-        
-      } catch (httpError) {
-        console.error('❌ Ошибка при получении файла обратно:', httpError);
-        
-        // Если не удалось получить файл обратно, возвращаем исходный формат
-        const hash = crypto.createHash('sha1').update(buffer).digest('hex');
-        const previewBuffer = Buffer.alloc(100);
-        buffer.copy(previewBuffer, 0, 0, 100);
-        const hexPreview = previewBuffer.toString('hex');
-        
-        const makeResponse = {
-          statusCode: 200,
-          headers: [
-            {
-              name: "accept-ranges",
-              value: "bytes"
-            },
-            {
-              name: "access-control-allow-origin",
-              value: "*"
-            },
-            {
-              name: "cache-control",
-              value: "public, max-age=0"
-            },
-            {
-              name: "content-length",
-              value: stats.size.toString()
-            },
-            {
-              name: "content-type",
-              value: contentType
-            },
-            {
-              name: "date",
-              value: new Date().toUTCString()
-            },
-            {
-              name: "etag",
-              value: `W/"${stats.size.toString(16)}-${Date.now().toString(16)}"`
-            },
-            {
-              name: "last-modified",
-              value: new Date().toUTCString()
-            },
-            {
-              name: "server",
-              value: "railway-edge"
-            },
-            {
-              name: "x-powered-by",
-              value: "Express"
-            },
-            {
-              name: "x-railway-edge",
-              value: "railway/us-east4-eqdc4a"
-            },
-            {
-              name: "x-railway-request-id",
-              value: uploadId
-            }
-          ],
-          cookieHeaders: [],
-          data: `IMTBuffer(${stats.size}, binary, ${hash}): ${hexPreview}`,
-          fileSize: stats.size,
-          fileName: transliteratedFileName,
-          fileUrl: directUrl,
-          error: "Файл доступен по прямой ссылке"
-        };
-        
         res.json(makeResponse);
       }
+      
+      // Логируем успешную загрузку
+      await pool.query(
+        `INSERT INTO download_logs (chat_id, bot_id, file_name, file_size, status) 
+         VALUES ($1, $2, $3, $4, $5)`,
+        [chat_id, bot.id, originalFileName, stats.size, 'success']
+      );
+      
+      const duration = Date.now() - startTime;
+      console.log(`✅ Загрузка завершена за ${(duration / 1000).toFixed(2)} сек`);
+      console.log(`🔗 Прямая ссылка: ${directUrl}`);
+      console.log(`📊 Размер: ${fileSizeMB.toFixed(2)} MB`);
       
       // Удаляем через 30 минут
       setTimeout(async () => {
