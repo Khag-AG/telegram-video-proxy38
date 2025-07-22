@@ -173,23 +173,131 @@ app.post('/download-bot', async (req, res) => {
     console.log(`🤖 Используем бота: ${bot.name}`);
 
     try {
+      // Проверяем корректность message_id
+      if (!message_id || message_id <= 0) {
+        throw new Error(`Некорректный ID сообщения: ${message_id}`);
+      }
+
+      console.log(`🔍 Ищем сообщение с ID: ${message_id} в канале: ${chat_id}`);
+
       // Получаем сообщение по ID
       const messages = await bot.client.invoke(
         new Api.channels.GetMessages({
           channel: await bot.client.getEntity(chat_id),
-          id: [new Api.InputMessageID({ id: message_id })]
+          id: [new Api.InputMessageID({ id: parseInt(message_id) })]
         })
       );
+      
+      console.log(`📬 Получено сообщений: ${messages.messages.length}`);
       
       if (!messages.messages || messages.messages.length === 0) {
         throw new Error('Сообщение не найдено');
       }
       
       const message = messages.messages[0];
-      if (!message.media) {
-        throw new Error('В сообщении нет медиа');
+      console.log(`📨 Тип сообщения: ${message.className}`);
+      console.log(`📨 ID сообщения: ${message.id}`);
+      console.log(`📨 Есть медиа: ${!!message.media}`);
+
+      // Проверяем, что это не пустое сообщение
+      if (message.className === 'MessageEmpty') {
+        throw new Error('Сообщение не найдено или удалено');
+      }
+
+      // Проверяем возраст сообщения
+      if (message.date) {
+        const messageDate = new Date(message.date * 1000);
+        const ageInHours = (Date.now() - messageDate) / (1000 * 60 * 60);
+        console.log(`📅 Возраст сообщения: ${ageInHours.toFixed(1)} часов`);
+        
+        if (ageInHours > 48) {
+          console.warn(`⚠️ Сообщение старше 48 часов, медиа может быть недоступно`);
+        }
+      }
+
+      // Определяем тип медиа и расширение
+      let defaultExtension = '.bin';
+      let mediaType = 'unknown';
+      let detectedFileName = file_name;
+
+      if (message.media) {
+        console.log(`📨 Тип медиа: ${message.media.className}`);
+        
+        if (message.media.photo) {
+          defaultExtension = '.jpg';
+          mediaType = 'photo';
+          console.log(`📸 Обнаружено фото`);
+          
+        } else if (message.media.document) {
+          const doc = message.media.document;
+          console.log(`📄 Документ ID: ${doc.id}`);
+          console.log(`📄 Размер: ${doc.size} байт`);
+          console.log(`📄 MIME: ${doc.mimeType}`);
+          
+          // Определяем тип по MIME
+          const mimeType = doc.mimeType || '';
+          
+          if (mimeType.startsWith('video/')) {
+            mediaType = 'video';
+            if (mimeType === 'video/mp4') defaultExtension = '.mp4';
+            else if (mimeType === 'video/x-matroska') defaultExtension = '.mkv';
+            else if (mimeType === 'video/x-msvideo') defaultExtension = '.avi';
+            else if (mimeType === 'video/quicktime') defaultExtension = '.mov';
+            else if (mimeType === 'video/webm') defaultExtension = '.webm';
+            
+          } else if (mimeType.startsWith('image/')) {
+            mediaType = 'photo';
+            if (mimeType === 'image/jpeg') defaultExtension = '.jpg';
+            else if (mimeType === 'image/png') defaultExtension = '.png';
+            else if (mimeType === 'image/gif') defaultExtension = '.gif';
+            else if (mimeType === 'image/webp') defaultExtension = '.webp';
+            
+          } else if (mimeType.startsWith('audio/')) {
+            mediaType = 'audio';
+            if (mimeType === 'audio/mpeg') defaultExtension = '.mp3';
+            else if (mimeType === 'audio/ogg') defaultExtension = '.ogg';
+            else if (mimeType === 'audio/mp4') defaultExtension = '.m4a';
+            else if (mimeType === 'audio/wav') defaultExtension = '.wav';
+            else if (mimeType === 'audio/x-voice') defaultExtension = '.oga';
+            
+          } else if (mimeType.startsWith('application/')) {
+            mediaType = 'document';
+            if (mimeType === 'application/pdf') defaultExtension = '.pdf';
+            else if (mimeType === 'application/zip') defaultExtension = '.zip';
+            else if (mimeType === 'application/x-rar-compressed') defaultExtension = '.rar';
+            else if (mimeType === 'application/msword') defaultExtension = '.doc';
+            else if (mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') defaultExtension = '.docx';
+            else if (mimeType === 'application/vnd.ms-excel') defaultExtension = '.xls';
+            else if (mimeType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') defaultExtension = '.xlsx';
+          }
+          
+          // Проверяем атрибуты документа для имени файла
+          if (doc.attributes) {
+            doc.attributes.forEach(attr => {
+              console.log(`📎 Атрибут: ${attr.className}`);
+              if (attr.fileName) {
+                console.log(`📎 Имя файла из атрибутов: ${attr.fileName}`);
+                detectedFileName = attr.fileName;
+              }
+              // Для голосовых сообщений
+              if (attr.className === 'DocumentAttributeAudio' && attr.voice) {
+                mediaType = 'voice';
+                defaultExtension = '.ogg';
+              }
+              // Для видео заметок
+              if (attr.className === 'DocumentAttributeVideo' && attr.roundMessage) {
+                mediaType = 'video_note';
+              }
+            });
+          }
+        } else if (message.media.webpage) {
+          throw new Error('Это превью веб-страницы, а не файл');
+        }
+      } else {
+        throw new Error(`В сообщении нет медиа. ID: ${message.id}, Тип: ${message.className}`);
       }
       
+      console.log(`📁 Определен тип медиа: ${mediaType}, расширение по умолчанию: ${defaultExtension}`);
       console.log(`⏬ Начинаем загрузку файла через MTProto...`);
       
       // Загружаем файл
@@ -203,10 +311,16 @@ app.post('/download-bot', async (req, res) => {
       });
       
       // Генерируем имя файла с транслитерацией
-      const originalFileName = file_name || `file_${Date.now()}.mp4`;
+      const originalFileName = detectedFileName || file_name || `file_${Date.now()}${defaultExtension}`;
       const transliteratedFileName = transliterate(originalFileName);
       const uploadId = uuidv4();
-      const extension = path.extname(transliteratedFileName) || '.mp4';
+      let extension = path.extname(transliteratedFileName);
+      
+      // Если расширение не определилось из имени файла, используем default
+      if (!extension || extension === '.') {
+        extension = defaultExtension;
+      }
+      
       const safeFileName = `${uploadId}${extension}`;
       const localPath = path.join(uploadDir, safeFileName);
       
@@ -221,12 +335,62 @@ app.post('/download-bot', async (req, res) => {
       const publicDomain = process.env.PUBLIC_DOMAIN || 'telegram-video-proxy38-production.up.railway.app';
       const directUrl = `https://${publicDomain}/uploads/${safeFileName}`;
       
-      // Определяем MIME тип
-      let contentType = 'video/mp4';
+      // Определяем MIME тип по расширению
+      let contentType = 'application/octet-stream';
+      
+      // Видео форматы
       if (extension === '.mp4') contentType = 'video/mp4';
       else if (extension === '.mkv') contentType = 'video/x-matroska';
       else if (extension === '.avi') contentType = 'video/x-msvideo';
       else if (extension === '.mov') contentType = 'video/quicktime';
+      else if (extension === '.webm') contentType = 'video/webm';
+      else if (extension === '.flv') contentType = 'video/x-flv';
+      else if (extension === '.wmv') contentType = 'video/x-ms-wmv';
+      
+      // Фото форматы
+      else if (extension === '.jpg' || extension === '.jpeg') contentType = 'image/jpeg';
+      else if (extension === '.png') contentType = 'image/png';
+      else if (extension === '.gif') contentType = 'image/gif';
+      else if (extension === '.webp') contentType = 'image/webp';
+      else if (extension === '.bmp') contentType = 'image/bmp';
+      else if (extension === '.svg') contentType = 'image/svg+xml';
+      else if (extension === '.ico') contentType = 'image/x-icon';
+      
+      // Аудио форматы
+      else if (extension === '.mp3') contentType = 'audio/mpeg';
+      else if (extension === '.ogg' || extension === '.oga') contentType = 'audio/ogg';
+      else if (extension === '.m4a') contentType = 'audio/mp4';
+      else if (extension === '.wav') contentType = 'audio/wav';
+      else if (extension === '.flac') contentType = 'audio/flac';
+      else if (extension === '.aac') contentType = 'audio/aac';
+      else if (extension === '.wma') contentType = 'audio/x-ms-wma';
+      
+      // Документы
+      else if (extension === '.pdf') contentType = 'application/pdf';
+      else if (extension === '.doc') contentType = 'application/msword';
+      else if (extension === '.docx') contentType = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      else if (extension === '.xls') contentType = 'application/vnd.ms-excel';
+      else if (extension === '.xlsx') contentType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+      else if (extension === '.ppt') contentType = 'application/vnd.ms-powerpoint';
+      else if (extension === '.pptx') contentType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      else if (extension === '.txt') contentType = 'text/plain';
+      else if (extension === '.csv') contentType = 'text/csv';
+      else if (extension === '.json') contentType = 'application/json';
+      else if (extension === '.xml') contentType = 'application/xml';
+      
+      // Архивы
+      else if (extension === '.zip') contentType = 'application/zip';
+      else if (extension === '.rar') contentType = 'application/x-rar-compressed';
+      else if (extension === '.7z') contentType = 'application/x-7z-compressed';
+      else if (extension === '.tar') contentType = 'application/x-tar';
+      else if (extension === '.gz') contentType = 'application/gzip';
+      
+      console.log(`📁 Финальный тип: ${mediaType}, MIME: ${contentType}, расширение: ${extension}`);
+      
+      // Предупреждение для больших файлов
+      if (fileSizeMB > 50) {
+        console.warn(`⚠️ Большой файл: ${fileSizeMB.toFixed(2)} MB. Рекомендуется использовать только прямую ссылку.`);
+      }
       
       // Конвертируем buffer в base64 для Make.com
       const base64Data = buffer.toString('base64');
@@ -237,9 +401,12 @@ app.post('/download-bot', async (req, res) => {
         file: {
           url: directUrl,
           name: transliteratedFileName,
+          originalName: originalFileName,
           size: stats.size,
           sizeMB: fileSizeMB.toFixed(2),
           mimeType: contentType,
+          mediaType: mediaType,
+          extension: extension,
           uploadId: uploadId,
           localPath: `/uploads/${safeFileName}`,
           // Добавляем бинарные данные в формате base64
