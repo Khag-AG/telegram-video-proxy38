@@ -161,6 +161,7 @@ app.post('/download-bot', async (req, res) => {
     console.log(`   Канал: ${chat_id}`);
     console.log(`   Сообщение: ${message_id}`);
     console.log(`   User-Agent: ${req.headers['user-agent']}`);
+    console.log(`   Accept: ${req.headers['accept']}`);
     
     if (!file_id || !message_id || !chat_id) {
       return res.status(400).json({ 
@@ -392,46 +393,75 @@ app.post('/download-bot', async (req, res) => {
         console.warn(`⚠️ Большой файл: ${fileSizeMB.toFixed(2)} MB. Рекомендуется использовать только прямую ссылку.`);
       }
       
-      // Конвертируем buffer в base64 для Make.com
-      const base64Data = buffer.toString('base64');
+      // Определяем тип запроса
+      const userAgent = req.headers['user-agent'] || '';
+      const acceptHeader = req.headers['accept'] || '';
+      const isMakeRequest = userAgent.includes('Make/') || userAgent.includes('Integromat/');
+      const wantsBinary = req.query.binary === 'true' || req.query.download === 'true';
       
-      // Создаем полный JSON ответ с бинарными данными
-      const response = {
-        success: true,
-        file: {
-          url: directUrl,
-          name: transliteratedFileName,
-          originalName: originalFileName,
-          size: stats.size,
-          sizeMB: fileSizeMB.toFixed(2),
-          mimeType: contentType,
-          mediaType: mediaType,
-          extension: extension,
-          uploadId: uploadId,
-          localPath: `/uploads/${safeFileName}`,
-          // Добавляем бинарные данные в формате base64
-          data: base64Data,
-          // Добавляем информацию для Make.com Buffer
-          buffer: {
+      console.log(`📋 Тип запроса: ${isMakeRequest ? 'Make.com' : 'Обычный'}`);
+      console.log(`📋 Accept: ${acceptHeader}`);
+      console.log(`📋 Binary mode: ${wantsBinary}`);
+      
+      // Если запрос от Make.com "Get a file" или явно запрошен бинарный режим
+      if (wantsBinary || (isMakeRequest && !acceptHeader.includes('application/json'))) {
+        console.log(`📤 Отправляем бинарный файл`);
+        
+        // Устанавливаем заголовки для бинарного файла
+        res.set({
+          'Content-Type': contentType,
+          'Content-Length': stats.size.toString(),
+          'Content-Disposition': `attachment; filename="${transliteratedFileName}"`,
+          'X-File-Name': transliteratedFileName,
+          'X-File-Size': stats.size.toString(),
+          'X-File-Type': mediaType,
+          'X-File-Extension': extension,
+          'Cache-Control': 'no-cache',
+          'Accept-Ranges': 'bytes'
+        });
+        
+        // Отправляем файл как бинарный поток
+        const fileStream = require('fs').createReadStream(localPath);
+        fileStream.pipe(res);
+        
+        fileStream.on('end', () => {
+          console.log(`✅ Бинарный файл отправлен`);
+        });
+        
+      } else {
+        // Для обычных запросов и запросов с Accept: application/json
+        console.log(`📤 Отправляем JSON с информацией о файле`);
+        
+        // Создаем ссылку для бинарного скачивания
+        const binaryUrl = `${directUrl}?download=true`;
+        
+        const response = {
+          success: true,
+          file: {
+            url: directUrl,
+            binaryUrl: binaryUrl, // Специальная ссылка для Make.com "Get a file"
+            name: transliteratedFileName,
+            originalName: originalFileName,
             size: stats.size,
-            encoding: 'base64'
+            sizeMB: fileSizeMB.toFixed(2),
+            mimeType: contentType,
+            mediaType: mediaType,
+            extension: extension,
+            uploadId: uploadId,
+            localPath: `/uploads/${safeFileName}`
+          },
+          bot: {
+            name: bot.name,
+            id: bot.id
+          },
+          processing: {
+            duration: Date.now() - startTime,
+            timestamp: new Date().toISOString()
           }
-        },
-        bot: {
-          name: bot.name,
-          id: bot.id
-        },
-        processing: {
-          duration: Date.now() - startTime,
-          timestamp: new Date().toISOString()
-        }
-      };
-      
-      console.log(`📤 Отправляем JSON с бинарными данными`);
-      console.log(`📊 Размер base64: ${(base64Data.length / 1024 / 1024).toFixed(2)} MB`);
-      
-      // Отправляем JSON ответ
-      res.status(200).json(response);
+        };
+        
+        res.status(200).json(response);
+      }
       
       // Логируем успешную загрузку
       await pool.query(
@@ -475,6 +505,40 @@ app.post('/download-bot', async (req, res) => {
       error: 'Внутренняя ошибка сервера',
       details: error.message 
     });
+  }
+});
+
+// Дополнительный эндпоинт для обработки статических файлов с параметром download
+app.get('/uploads/:filename', (req, res, next) => {
+  const { filename } = req.params;
+  const { download } = req.query;
+  
+  if (download === 'true') {
+    const filePath = path.join(uploadDir, filename);
+    
+    // Проверяем существование файла
+    fs.access(filePath, fs.constants.F_OK, (err) => {
+      if (err) {
+        return res.status(404).json({ error: 'Файл не найден' });
+      }
+      
+      // Определяем MIME тип
+      const extension = path.extname(filename);
+      let contentType = 'application/octet-stream';
+      
+      // ... определение contentType по расширению ...
+      
+      // Отправляем файл с правильными заголовками
+      res.set({
+        'Content-Type': contentType,
+        'Content-Disposition': `attachment; filename="${filename}"`
+      });
+      
+      res.sendFile(filePath);
+    });
+  } else {
+    // Для обычных запросов используем стандартный обработчик static
+    next();
   }
 });
 
